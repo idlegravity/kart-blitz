@@ -1,0 +1,6 @@
+node_modules/
+dist/
+snaps/*
+!snaps/.gitkeep
+.DS_Store
+*.log

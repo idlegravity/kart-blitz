@@ -1,0 +1,20 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>contact sheet</title>
+<style>html,body{margin:0;background:#111;color:#ddd;font:12px monospace}#g{display:grid;gap:4px}img{width:100%;display:block}figure{margin:0;position:relative}figcaption{position:absolute;left:4px;top:2px;background:#000a;padding:1px 4px}</style></head>
+<body><div id="g"></div>
+<script>
+const p = new URLSearchParams(location.search);
+const files = (p.get('files') || '').split(',').filter(Boolean);
+const cols = Number(p.get('cols') || 3);
+const g = document.getElementById('g');
+g.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+for (const f of files) {
+  const fig = document.createElement('figure');
+  const img = document.createElement('img');
+  img.src = '/' + f;
+  const cap = document.createElement('figcaption');
+  cap.textContent = f.split('/').pop();
+  fig.append(img, cap);
+  g.append(fig);
+}
+</script></body></html>

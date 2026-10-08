@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" /><link rel="icon" href="data:," />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Kart Blitz — audio jukebox</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #0f1226; color: #e9ecff; font: 14px/1.4 system-ui, sans-serif; padding: 20px 24px 60px; }
+  h1 { margin: 0 0 4px; font-size: 22px; }
+  h2 { margin: 26px 0 10px; font-size: 13px; letter-spacing: .14em; text-transform: uppercase; color: #ffd23f; }
+  .sub { color: #98a2d6; margin-bottom: 14px; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  button { font: 700 13px system-ui; color: #fff; background: #2b3170; border: 0; border-radius: 10px; padding: 9px 14px; cursor: pointer; box-shadow: 0 3px 0 #141838; }
+  button:hover { background: #3a42a0; }
+  button:active { transform: translateY(2px); box-shadow: 0 1px 0 #141838; }
+  button.on { background: #1fbf55; }
+  button.song { background: #6a3ef0; } button.song:hover { background: #8558ff; }
+  button.warn { background: #b52a3a; }
+  .panel { background: #171b3d; border-radius: 14px; padding: 14px 16px; margin-top: 10px; }
+  label { display: inline-flex; align-items: center; gap: 8px; margin-right: 18px; color: #c9d0ff; }
+  input[type=range] { width: 160px; }
+  #stats { font: 12px ui-monospace, Menlo, monospace; color: #7dffb0; white-space: pre; }
+  #report { font: 12px ui-monospace, Menlo, monospace; color: #cfd6ff; white-space: pre; max-height: 300px; overflow: auto; }
+  canvas { width: 100%; max-width: 1100px; height: 120px; background: #0b0d20; border-radius: 10px; display: block; margin-top: 8px; }
+</style>
+</head>
+<body>
+<h1>Kart Blitz — audio jukebox</h1>
+<div class="sub">Every song, every effect and the engine voice, straight from the game's AudioManager. Click anything to unlock audio.</div>
+
+<div class="panel row">
+  <label>Master <input id="vMaster" type="range" min="0" max="1" step="0.01" value="0.8" /></label>
+  <label>Music <input id="vMusic" type="range" min="0" max="1" step="0.01" value="0.55" /></label>
+  <label>SFX <input id="vSfx" type="range" min="0" max="1" step="0.01" value="0.85" /></label>
+  <button id="bMute">Mute</button>
+  <button id="bPause">Pause FX</button>
+  <button id="bTempo">Final-lap tempo x1.12</button>
+  <button id="bStar">Star music</button>
+  <button id="bStop" class="warn">Stop music</button>
+</div>
+<div class="panel"><div id="stats">audio not started</div></div>
+
+<h2>Songs</h2>
+<div class="row" id="songs"></div>
+
+<h2>Sound effects</h2>
+<div class="row" id="sfx"></div>
+<div class="row" style="margin-top:10px"><button id="bDemo">Play all SFX in sequence</button><button id="bLoud">Loudness report (offline render)</button><button id="bMusicReport">Song report (offline render)</button></div>
+
+<h2>Engine</h2>
+<div class="panel">
+  <div class="row">
+    <button id="bEngine">Start engine</button>
+    <label>Speed <input id="eSpeed" type="range" min="0" max="1.2" step="0.005" value="0" /></label>
+    <label>Throttle <input id="eThr" type="range" min="0" max="1" step="0.01" value="0" /></label>
+    <label>Boost <input id="eBoost" type="range" min="0" max="1" step="0.01" value="0" /></label>
+    <label><input id="eDrift" type="checkbox" /> Drift</label>
+    <label><input id="eOff" type="checkbox" /> Off-road</label>
+    <label><input id="eAuto" type="checkbox" checked /> Auto accelerate</label>
+  </div>
+  <div class="sub" id="eInfo"></div>
+</div>
+
+<h2>Report</h2>
+<div class="panel"><div id="report">Run a report to see peak / RMS levels.</div><canvas id="viz" width="1100" height="120"></canvas></div>
+
+<script type="module" src="./audio.js"></script>
+</body>
+</html>

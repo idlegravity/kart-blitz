@@ -1,0 +1,20 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><link rel="icon" href="data:,"><title>Kart Blitz — spectrogram</title>
+<style>html,body{margin:0;background:#080a1c;color:#fff;font:12px monospace}canvas{display:block}#info{padding:4px 8px}</style></head>
+<body><div id="info">rendering…</div><canvas id="cv" width="1280" height="420"></canvas>
+<script type="module">
+import { renderSong, renderSfx, renderEngine, analyse, drawSpectrogram } from './audio-lib.js';
+const q = new URLSearchParams(location.search);
+const cv = document.getElementById('cv');
+let buf, label;
+if (q.has('song')) { const s = Number(q.get('sec') || 24); buf = await renderSong(q.get('song'), s, { tempo: Number(q.get('tempo') || 1) }); label = `song ${q.get('song')} ${s}s`; }
+else if (q.has('sfx')) { buf = await renderSfx(q.get('sfx'), { level: 2, impact: 10, index: 3 }, Number(q.get('sec') || 3)); label = `sfx ${q.get('sfx')}`; }
+else if (q.has('engine')) {
+  const states = [ {speed:0,throttle:0},{speed:0,throttle:1},{speed:0.15,throttle:1},{speed:0.35,throttle:1},{speed:0.6,throttle:1},{speed:0.85,throttle:1},{speed:1,throttle:1,boost:1},{speed:1,throttle:0},{speed:0.8,throttle:1,skid:1},{speed:0.7,throttle:1,offroad:1} ];
+  buf = await renderEngine(states, 1.2); label = 'engine: idle, rev, 15%, 35%, 60%, 85%, boost, lift, drift, offroad';
+}
+drawSpectrogram(cv, buf, { label });
+const a = analyse(buf, label); delete a.env;
+document.getElementById('info').textContent = JSON.stringify(a);
+window.__done = true;
+</script></body></html>

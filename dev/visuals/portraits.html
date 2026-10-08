@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Portraits</title>
+<style>
+html,body{margin:0;background:#2a2f55;color:#fff;font:12px monospace}
+#grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;padding:8px}
+.cell{background:linear-gradient(160deg,#3d4580,#1f2340);border-radius:12px;padding:8px;text-align:center}
+.cell img{width:100%;image-rendering:auto}
+.small{display:flex;gap:6px;justify-content:center;margin-top:6px}
+.small img{width:64px;height:64px;border-radius:50%;background:#556}
+</style>
+</head>
+<body>
+<div id="grid"></div>
+<script type="module" src="./portraits.js"></script>
+</body>
+</html>

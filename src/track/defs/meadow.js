@@ -1,0 +1,56 @@
+/**
+ * Sunshine Circuit — track definition (data only). Points: [x, y, z, halfWidth, bankDegrees].
+ */
+export default {
+  id: 'meadow',
+  theme: 'meadow',
+  seed: 11,
+  laps: 3,
+  halfWidth: 10,
+  autoBank: { scale: 470, max: 9 },
+  lake: { x: 178, z: 108, rx: 50, rz: 54, level: 0.6, depth: 5.5 },
+  itemRows: [{ s: 128 }, { s: 372 }, { s: 590 }, { s: 830 }],
+  boost: [
+    { s: 96, length: 14, lateral: 0, width: 8 },
+    { s: 462, length: 14, lateral: 0, width: 8 },
+    { s: 918, length: 14, lateral: 0, width: 8 },
+  ],
+  ramps: [{ s: 503, length: 10, launch: 9.5, height: 1.2 }],
+  walls: [
+    { side: 'both', s0: 1015, s1: 152, style: 'fence', offset: 4.5 },
+    { side: 'left', s0: 196, s1: 402, style: 'tire', offset: 4.5 },
+    { side: 'left', s0: 556, s1: 640, style: 'tire', offset: 4.5 },
+    { side: 'left', s0: 662, s1: 880, style: 'tire', offset: 4.5 },
+    { side: 'right', s0: 905, s1: 1010, style: 'fence', offset: 4.5 },
+  ],
+  // scenery zones (s ranges): open vista on the crest, dense forest after the crest, flower field on the return, poplar avenue on the home straight
+  zones: [
+    { kind: 'open', s0: 440, s1: 545 },
+    { kind: 'forest', s0: 560, s1: 660 },
+    { kind: 'flowers', s0: 760, s1: 910 },
+    { kind: 'avenue', s0: 918, s1: 1010, gap: 14 },
+  ],
+  grandstand: { s: 6, side: 1, length: 70 },
+  shortcut: { s0: 676, s1: 846, side: 1, width: 7 },
+  points: [
+    [0, 0, 0, 11, 0],
+    [85, 0, 0, 11, 0],
+    [150, 0.5, 6, 10, 2],
+    [205, 1.9, 32, 10, 6],
+    [240, 3.6, 80, 10, 8],
+    [243, 4.8, 135, 10, 8],
+    [210, 5.6, 182, 10, 6],
+    [150, 7.4, 205, 10, 3],
+    [90, 11.2, 207, 10, 0],
+    [35, 8.4, 200, 10, 0],
+    [-15, 5.4, 208, 9, -4],
+    [-58, 3.8, 230, 9, 4],
+    [-105, 2.6, 222, 10, 5],
+    [-152, 1.6, 178, 10, 6],
+    [-165, 0.9, 118, 10, -2],
+    [-148, 0.4, 62, 10, -5],
+    [-118, 0.0, 24, 10, 3],
+    [-82, 0, 3, 11, 0],
+    [-42, 0, 0, 11, 0],
+  ],
+};

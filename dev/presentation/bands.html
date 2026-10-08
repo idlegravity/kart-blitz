@@ -1,0 +1,7 @@
+<!doctype html><html><body><script type="module">
+import { renderSong, bandEnergy, analyse } from './audio-lib.js';
+import { SONGS } from '/src/audio/songs.js';
+const out = {};
+for (const k of Object.keys(SONGS)) { const b = await renderSong(k, 20); out[k] = { bands: bandEnergy(b).map(x => x.db), rms: analyse(b).rmsDb }; }
+window.__bands = out; window.__done = true;
+</script></body></html>

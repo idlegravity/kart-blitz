@@ -1,0 +1,102 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>World — outlines</title>
+<style>
+  body { margin: 0; background: #10131f; color: #cde; font: 12px ui-monospace, Menlo, monospace; }
+  canvas { display: block; }
+  #info { position: fixed; left: 8px; top: 8px; white-space: pre; }
+</style>
+</head>
+<body>
+<canvas id="c" width="1400" height="1400"></canvas>
+<div id="info"></div>
+<script type="module">
+import { Centerline, inRange } from '/src/track/centerline.js';
+const ids = ['meadow', 'canyon', 'glacier', 'neon'];
+const params = new URLSearchParams(location.search);
+const only = params.get('track');
+const list = only ? [only] : ids;
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+const info = document.getElementById('info');
+ctx.fillStyle = '#10131f';
+ctx.fillRect(0, 0, cv.width, cv.height);
+const cols = only ? 1 : 2, rows = only ? 1 : 2;
+const cw = cv.width / cols, ch = cv.height / rows;
+let text = '';
+for (let k = 0; k < list.length; k++) {
+  const id = list[k];
+  const def = (await import(`/src/track/defs/${id}.js`)).default;
+  const cl = new Centerline(def);
+  const b = cl.bounds();
+  const pad = 60;
+  const sc = Math.min((cw - pad * 2) / (b.maxX - b.minX), (ch - pad * 2) / (b.maxZ - b.minZ));
+  const ox = (k % cols) * cw + pad + ((cw - pad * 2) - (b.maxX - b.minX) * sc) / 2 - b.minX * sc;
+  const oz = Math.floor(k / cols) * ch + pad + ((ch - pad * 2) - (b.maxZ - b.minZ) * sc) / 2 - b.minZ * sc;
+  const X = (x) => ox + x * sc, Z = (z) => oz + z * sc;
+  // road ribbon
+  ctx.lineCap = 'round';
+  for (let i = 0; i < cl.N; i++) {
+    const j = (i + 1) % cl.N;
+    const kk = Math.min(1, Math.abs(cl.curv[i]) * 120);
+    ctx.strokeStyle = `rgb(${Math.round(70 + 185 * kk)},${Math.round(150 - 70 * kk)},${Math.round(200 - 120 * kk)})`;
+    ctx.lineWidth = Math.max(2, cl.hw[i] * 2 * sc);
+    ctx.beginPath(); ctx.moveTo(X(cl.px[i]), Z(cl.pz[i])); ctx.lineTo(X(cl.px[j]), Z(cl.pz[j])); ctx.stroke();
+  }
+  // elevation as thin colored line
+  const minY = b.minY, spanY = Math.max(1, b.maxY - b.minY);
+  for (let i = 0; i < cl.N; i += 1) {
+    const j = (i + 1) % cl.N;
+    const t = (cl.py[i] - minY) / spanY;
+    ctx.strokeStyle = `hsl(${120 - t * 120},90%,55%)`;
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(X(cl.px[i]), Z(cl.pz[i])); ctx.lineTo(X(cl.px[j]), Z(cl.pz[j])); ctx.stroke();
+  }
+  // features
+  const mark = (s, color, r = 5, label) => {
+    const i = cl.indexAt(s);
+    ctx.fillStyle = color; ctx.beginPath(); ctx.arc(X(cl.px[i]), Z(cl.pz[i]), r, 0, 7); ctx.fill();
+    if (label) { ctx.fillStyle = '#fff'; ctx.fillText(label, X(cl.px[i]) + 7, Z(cl.pz[i]) - 6); }
+  };
+  for (const p of cl.features.boost) mark(p.s + p.length / 2, '#3f6', 5);
+  for (const p of cl.features.ramps) mark(p.s, '#f44', 6, 'ramp');
+  for (const g of cl.gaps) mark(g.s0, '#000', 7, 'gap');
+  for (const w of def.walls ?? []) {
+    ctx.strokeStyle = w.side === 'left' ? '#0af' : w.side === 'right' ? '#fa0' : '#fff';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    let first = true;
+    for (let s = w.s0; ; s += 4) {
+      const ss = s;
+      if (w.s1 >= w.s0 ? ss > w.s1 : (ss > cl.length && ss - cl.length > w.s1)) break;
+      const i = cl.indexAt(ss);
+      const off = (cl.hw[i] + (w.offset ?? 4)) * (w.side === 'left' ? -1 : 1);
+      const x = cl.px[i] + cl.rx[i] * off, z = cl.pz[i] + cl.rz[i] * off;
+      if (first) { ctx.moveTo(X(x), Z(z)); first = false; } else ctx.lineTo(X(x), Z(z));
+    }
+    ctx.stroke();
+  }
+  // s ticks
+  ctx.font = '11px ui-monospace, Menlo, monospace';
+  for (let s = 0; s < cl.length; s += 100) mark(s, '#fff', s === 0 ? 8 : 3, String(s));
+  ctx.fillStyle = '#ff0';
+  ctx.fillText(`${id}  L=${cl.length.toFixed(0)} m  N=${cl.N}  y ${b.minY.toFixed(0)}..${b.maxY.toFixed(0)}`, (k % cols) * cw + 12, Math.floor(k / cols) * ch + 20);
+  // min separation between non-adjacent sections
+  let minSep = Infinity, at = null;
+  for (let i = 0; i < cl.N; i += 3) for (let j = i + 1; j < cl.N; j += 3) {
+    const ds = Math.min(Math.abs(j - i), cl.N - Math.abs(j - i)) * cl.ds;
+    if (ds < 120) continue;
+    const d = Math.hypot(cl.px[i] - cl.px[j], cl.pz[i] - cl.pz[j]);
+    if (d < minSep) { minSep = d; at = [i * cl.ds, j * cl.ds, Math.abs(cl.py[i] - cl.py[j])]; }
+  }
+  let minR = Infinity;
+  for (let i = 0; i < cl.N; i++) minR = Math.min(minR, 1 / Math.max(1e-4, Math.abs(cl.curv[i])));
+  text += `${id}: L=${cl.length.toFixed(0)} N=${cl.N} minRadius=${minR.toFixed(0)} minSep=${minSep.toFixed(0)} @ s=${at?.map((v) => v.toFixed(0)).join('/')}\n`;
+}
+info.textContent = text;
+window.__done = true;
+</script>
+</body>
+</html>

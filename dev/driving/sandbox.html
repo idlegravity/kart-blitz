@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Driving sandbox</title>
+    <style>
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #0b0d1c; }
+      canvas { display: block; }
+      #hud { position: fixed; left: 8px; bottom: 8px; color: #0f0; font: 12px/1.35 ui-monospace, Menlo, monospace; background: rgba(0, 0, 0, 0.55); padding: 6px 8px; border-radius: 6px; white-space: pre; pointer-events: none; }
+      #help { position: fixed; right: 8px; top: 8px; color: #ddd; font: 12px/1.4 ui-monospace, Menlo, monospace; background: rgba(0, 0, 0, 0.45); padding: 6px 8px; border-radius: 6px; pointer-events: none; }
+    </style>
+  </head>
+  <body>
+    <div id="hud"></div>
+    <div id="help">WASD/arrows drive · Space/Shift hop+drift · Q look back · R respawn<br />?track=test|meadow|canyon|glacier|neon &amp; bots=N &amp; char=id &amp; hud=0</div>
+    <script type="module" src="./sandbox.js"></script>
+  </body>
+</html>

@@ -1,0 +1,30 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" /><link rel="icon" href="data:," />
+<title>Kart Blitz - icon sheet</title>
+<style>
+  html,body{margin:0;background:#1b1f3a;color:#fff;font:14px system-ui}
+  h3{margin:14px 16px 4px}
+  .grid{display:flex;flex-wrap:wrap;gap:10px;padding:8px 16px}
+  .cell{width:120px;text-align:center;font-size:11px;opacity:.95}
+  .cell .bub{width:110px;height:110px;border-radius:50%;background:radial-gradient(circle at 35% 28%,#5c66c8,#252a63 70%);display:grid;place-items:center;box-shadow:inset 0 0 0 4px #0d0f2b}
+  .cell svg{width:86px;height:86px;overflow:visible}
+  .glyphs .cell{width:70px}.glyphs .cell .bub{width:54px;height:54px;border-radius:14px;background:#2b3170}.glyphs svg{width:34px;height:34px;color:#fff}
+  .trophies .cell{width:160px}.trophies .cell .bub{width:150px;height:170px;border-radius:20px;background:#252a63}.trophies svg{width:120px;height:140px}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script type="module">
+import { DEFS_SVG, itemIcon, ITEM_ICON_VARIANTS as ITEM_ICON_IDS, uiIcon, trophySvg, LOGO_BOLT } from '/src/ui/icons.js';
+const app = document.getElementById('app');
+let html = DEFS_SVG;
+html += '<h3>Items</h3><div class="grid">' + ITEM_ICON_IDS.map(id => `<div class="cell"><div class="bub">${itemIcon(id)}</div>${id}</div>`).join('') + '</div>';
+const glyphs = ['trophy','flag','stopwatch','gear','gamepad','keyboard','gauge','play','restart','exit','home','speaker','music','monitor','fps','star','flame','bolt','check','chevron','arrowUp','arrowDown','lock','warn','siren','rocket','medal','crown','feather','shield','kettle','tip','close','info'];
+html += '<h3>Glyphs</h3><div class="grid glyphs">' + glyphs.map(id => `<div class="cell"><div class="bub">${uiIcon(id)}</div>${id}</div>`).join('') + '</div>';
+html += '<h3>Trophies</h3><div class="grid trophies">' + ['gold','silver','bronze','participation'].map(id => `<div class="cell"><div class="bub">${trophySvg(id)}</div>${id}</div>`).join('') + `<div class="cell"><div class="bub">${LOGO_BOLT.replace('class="logo-bolt"','style="width:100px;height:140px"')}</div>bolt</div></div>`;
+app.innerHTML = html;
+</script>
+</body>
+</html>
