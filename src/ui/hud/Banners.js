@@ -134,7 +134,7 @@ export class Banners {
     const dev = this.hud.ui.device;
     if (!force && dev === this._skipDevice) return;
     this._skipDevice = dev;
-    this.skipHint.innerHTML = `${actionGlyph('skip', dev)}<span>Skip intro</span>`;
+    this.skipHint.innerHTML = dev === 'touch' ? '<span>Tap to skip</span>' : `${actionGlyph('skip', dev)}<span>Skip intro</span>`;
   }
 
   update() {

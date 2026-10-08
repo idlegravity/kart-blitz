@@ -16,18 +16,32 @@ import { MusicEngine } from './music.js';
 import { SONGS, TRACK_MUSIC } from './songs.js';
 import { SFX, SFX_META, SFX_NAMES } from './sfx.js';
 import { EngineVoice, rpmTarget } from './engine.js';
+import { PLATFORM } from '../core/platform.js';
+import { VOICE_BUDGET } from './instruments.js';
+
+/** Phones/tablets: lighter graph (docs/MOBILE.md §3.5). Desktop paths below are unchanged. */
+const MOBILE = !!PLATFORM?.mobile;
+VOICE_BUDGET.lite = MOBILE;
 
 const MASTER_TRIM = 1.5;
 const MUSIC_TRIM = 0.9;
 const SFX_TRIM = 1.0;
 const ENGINE_TRIM = 0.24;
-const CPU_VOICES = 3;
+const CPU_VOICES = MOBILE ? 2 : 3;
 const CPU_VOICES_SPLIT = 4;
 /** Per-human engine level by number of humans (keeps the summed mix about constant). */
 const PLAYER_ENGINE_SCALE = [1, 0.62, 0.5, 0.42];
 const QUAD_PAN = 0.28;
 const CUE_GAP = { placeCue: 0.8, wrongWay: 2.5, itemGet: 0.12, finish: 1.4 };
 const HEAR_RANGE = 90; // metres
+/** Mobile polyphony: at most this many one-shot SFX alive at once (cues in PRIORITY_SFX always pass). */
+const MOBILE_SFX_MAX = 12;
+const PRIORITY_SFX = new Set(['countdownBeep', 'countdownGo', 'finalLap', 'lap', 'finishWin', 'finishLose', 'itemGet', 'lightning', 'explosion', 'pauseOn', 'pauseOff']);
+/** Percussion layers dropped on mobile (sit under the mix anyway; each hit is a noise source + filter + gain). */
+const MOBILE_THIN_DRUMS = new Set(['shaker', 'tamb', 'cow', 'rim']);
+const MOBILE_SAMPLE_RATE = 32000;
+const GESTURE_EVENTS = ['pointerdown', 'pointerup', 'touchend', 'mousedown', 'click', 'keydown', 'keyup'];
+const WATCHDOG_MS = 750;
 const MENU_SCREENS = new Set(['title', 'main', 'cc', 'character', 'cup', 'track', 'options', 'controls']);
 
 export class AudioManager {
@@ -57,7 +71,23 @@ export class AudioManager {
     this._cueAt = new Map();
     this._finalLapDone = false;
     this._engineCpuN = CPU_VOICES;
+    /** Self-healing bookkeeping (see _watch) — exposed through stats().diag */
+    this.diag = { resumes: 0, rebuilds: 0, freezes: 0, silentHeals: 0, duckFixes: 0, pauseFixes: 0, schedKicks: 0, stateChanges: 0, last: '' };
+    this._clockT = -1;
+    this._clockWall = 0;
+    this._kicked = false;
+    this._lastState = '';
+    this._silent = 0;
+    this._healTries = 0;
+    this._goodSince = 0;
+    this._duckUntil = 0;
+    this._pauseAt = 0;
+    this._engDt = 0;
+    this._engFrame = 0;
+    this._primed = false;
+    this._wakeTimer = 0;
     this._wire();
+    this._installGuards();
   }
 
   // ==================================================================================================
@@ -68,7 +98,10 @@ export class AudioManager {
     if (!this.ctx) this._build();
     const ctx = this.ctx;
     if (!ctx) return;
-    if (ctx.state !== 'running') ctx.resume?.().catch(() => {});
+    this._audioSession();
+    if (ctx.state !== 'running') this._resume(true);
+    this._prime();
+    this._silentLoop(true);
     if (!this.unlocked) {
       this.unlocked = true;
       this._syncToState();
@@ -136,10 +169,19 @@ export class AudioManager {
   playSfx(name, opts = {}) {
     const ctx = this.ctx;
     if (!ctx || this.muted) return;
+    // while the clock is frozen (suspended / interrupted / hidden) sounds would pile up and all fire at once on resume
+    if (ctx.state !== 'running') return;
     const fn = SFX[name];
     if (!fn) return;
     const meta = SFX_META[name] ?? {};
     const now = ctx.currentTime;
+    if (MOBILE && !PRIORITY_SFX.has(name)) {
+      const ends = (this._sfxEnds ??= []);
+      let w = 0;
+      for (let i = 0; i < ends.length; i++) if (ends[i] > now) ends[w++] = ends[i];
+      ends.length = w;
+      if (w >= MOBILE_SFX_MAX) return;
+    }
     // split-screen: cooldowns are tracked per human so four players don't mute each other's cues, and polyphony scales up
     const nh = this._humans().length;
     const hi = nh > 1 ? this._humanIndex(opts.kart) : -1;
@@ -155,6 +197,7 @@ export class AudioManager {
     if (!sp) return;
     st.last = now;
     st.ends.push(now + (meta.len ?? 0.7));
+    if (MOBILE) (this._sfxEnds ??= []).push(now + (meta.len ?? 0.7));
     const out = ctx.createGain();
     out.gain.value = sp.gain * (opts.volume ?? 1);
     let node = out;
@@ -184,6 +227,7 @@ export class AudioManager {
     const ctx = this.ctx;
     if (!ctx) return;
     const now = ctx.currentTime;
+    this._duckUntil = performance.now() + (0.06 + hold + release + 1.5) * 1000;
     const p = this.musicDuck.gain;
     p.cancelScheduledValues(now);
     p.setValueAtTime(p.value, now);
@@ -288,6 +332,10 @@ export class AudioManager {
       cpuAssigned: this._engines?.cpus.map((c) => c.kart?.id ?? null) ?? [],
       engineScale: PLAYER_ENGINE_SCALE[Math.min(3, Math.max(0, this._humans().length - 1))],
       time: this.ctx?.currentTime ?? 0,
+      mobile: MOBILE,
+      sampleRate: this.ctx?.sampleRate ?? 0,
+      hidden: typeof document !== 'undefined' && document.hidden,
+      diag: { ...this.diag },
     };
   }
 
@@ -295,16 +343,38 @@ export class AudioManager {
   // graph
   // ==================================================================================================
   _build() {
+    if (!this._createContext()) return;
+    this._buildGraph();
+  }
+
+  /** Create (or re-create) the AudioContext. Returns false when WebAudio is unavailable. */
+  _createContext() {
     const AC = window.AudioContext || window.webkitAudioContext;
-    if (!AC) return;
-    let ctx;
-    try {
-      ctx = new AC({ latencyHint: 'interactive' });
-    } catch (e) {
-      console.warn('[audio] AudioContext unavailable', e);
-      return;
+    if (!AC) return false;
+    let ctx = null;
+    // phones: render at 32 kHz (≈ 2/3 of the DSP work of 48 kHz; the device speaker has nothing up there anyway)
+    const tries = MOBILE ? [{ latencyHint: 'interactive', sampleRate: MOBILE_SAMPLE_RATE }, { latencyHint: 'interactive' }, {}] : [{ latencyHint: 'interactive' }, {}];
+    for (const opts of tries) {
+      try {
+        ctx = new AC(opts);
+        break;
+      } catch (e) {
+        console.warn('[audio] AudioContext unavailable with', opts, e);
+      }
     }
+    if (!ctx) return false;
     this.ctx = ctx;
+    this._clockT = ctx.currentTime;
+    this._clockWall = performance.now();
+    this._kicked = false;
+    this._lastState = ctx.state;
+    ctx.onstatechange = () => this._onState(ctx);
+    return true;
+  }
+
+  /** Build every node of the graph on this.ctx (also used by _rebuild after a failure). */
+  _buildGraph() {
+    const ctx = this.ctx;
     this.master = ctx.createGain();
     // gentle "glue" compressor, then a fast brickwall limiter so loud moments (explosions on top of a fanfare, or a
     // user pushing every slider to 100%) never clip the output
@@ -321,7 +391,7 @@ export class AudioManager {
     this.limiter.attack.value = 0.002;
     this.limiter.release.value = 0.09;
     this.master.connect(this.comp).connect(this.limiter).connect(ctx.destination);
-    // metering tap (debug / mix calibration): AudioManager.level() reads it on demand, no per-frame cost
+    // metering tap (debug / mix calibration / silence watchdog): reads on demand, no per-frame cost
     this.meterNode = ctx.createAnalyser();
     this.meterNode.fftSize = 2048;
     this.meterNode.smoothingTimeConstant = 0;
@@ -332,7 +402,7 @@ export class AudioManager {
     this.musicIn = ctx.createGain();
     this.musicFilter = ctx.createBiquadFilter();
     this.musicFilter.type = 'lowpass';
-    this.musicFilter.frequency.value = 20000;
+    this.musicFilter.frequency.value = Math.min(20000, ctx.sampleRate * 0.49);
     this.musicFilter.Q.value = 0.5;
     this.musicDuck = ctx.createGain();
     this.musicBus = ctx.createGain();
@@ -346,32 +416,360 @@ export class AudioManager {
     shelf.frequency.value = 5500;
     shelf.gain.value = 2.5;
     this.musicIn.connect(hp).connect(shelf).connect(this.musicFilter).connect(this.musicDuck).connect(this.musicBus).connect(this.master);
-    this.musicConv = ctx.createConvolver();
-    this.musicConv.buffer = impulseResponse(ctx, 2.6, 2.8, { damp: 0.45 });
     this.musicRevIn = ctx.createGain();
-    this.musicRevIn.connect(this.musicConv).connect(this.musicIn);
+    if (MOBILE) {
+      // no convolution on phones: two short darkening echo taps give the music some space for a handful of nodes
+      this.musicConv = null;
+      const tap = (delay, fb, pan) => {
+        const d = ctx.createDelay(0.5);
+        d.delayTime.value = delay;
+        const lp = ctx.createBiquadFilter();
+        lp.type = 'lowpass';
+        lp.frequency.value = 3200;
+        const f = ctx.createGain();
+        f.gain.value = fb;
+        const out = ctx.createGain();
+        out.gain.value = 0.55;
+        this.musicRevIn.connect(d);
+        d.connect(lp);
+        lp.connect(f).connect(d);
+        if (ctx.createStereoPanner) {
+          const sp = ctx.createStereoPanner();
+          sp.pan.value = pan;
+          lp.connect(out).connect(sp).connect(this.musicIn);
+        } else lp.connect(out).connect(this.musicIn);
+      };
+      tap(0.041, 0.42, -0.5);
+      tap(0.067, 0.4, 0.5);
+    } else {
+      this.musicConv = ctx.createConvolver();
+      this.musicConv.buffer = impulseResponse(ctx, 2.6, 2.8, { damp: 0.45 });
+      this.musicRevIn.connect(this.musicConv).connect(this.musicIn);
+    }
 
     // sfx
     this.sfxIn = ctx.createGain();
     this.sfxBus = ctx.createGain();
     this.sfxIn.connect(this.sfxBus).connect(this.master);
     this.sfxConv = ctx.createConvolver();
-    this.sfxConv.buffer = impulseResponse(ctx, 1.9, 3.2, { damp: 0.5 });
+    this.sfxConv.buffer = MOBILE ? impulseResponse(ctx, 0.6, 3.4, { damp: 0.5 }) : impulseResponse(ctx, 1.9, 3.2, { damp: 0.5 });
     this.sfxRevIn = ctx.createGain();
     this.sfxRevIn.connect(this.sfxConv).connect(this.sfxBus);
     this.engineBus = ctx.createGain();
     this.engineBus.gain.value = ENGINE_TRIM;
     this.engineBus.connect(this.sfxBus);
 
-    this.music = new MusicEngine(ctx, { dest: this.musicIn, reverb: this.musicRevIn, songs: SONGS });
+    this.music = new MusicEngine(ctx, {
+      dest: this.musicIn,
+      reverb: this.musicRevIn,
+      songs: SONGS,
+      ...(MOBILE ? { lookahead: 1.1, tickMs: 50, thinDrums: MOBILE_THIN_DRUMS } : {}),
+    });
     this._applyVolumes(true);
-    // don't let the sequencer starve (and the mix glitch) while the tab is hidden: freeze audio time instead
+  }
+
+  // ==================================================================================================
+  // robustness: unlock, interruptions, visibility, watchdog, self-healing
+  // ==================================================================================================
+  /** Document/window listeners live for the whole session (they are cheap) so audio can always be woken again. */
+  _installGuards() {
+    if (typeof document === 'undefined' || this._guards) return;
+    this._guards = true;
+    this._audioSession();
+    // iOS only lets audio start from touchend/click (not touchstart/pointerdown); keep the listeners forever — after a phone call or
+    // a Siri interruption the context needs a fresh gesture to come back
+    this._onGesture = () => {
+      if (!this.ctx) {
+        this.unlock();
+        return;
+      }
+      if (this.ctx.state !== 'running') this.unlock();
+      else if (!this._primed) this._prime();
+    };
+    for (const e of GESTURE_EVENTS) window.addEventListener(e, this._onGesture, { capture: true, passive: true });
+    // the desktop path keeps its behaviour (freeze audio time while hidden so the sequencer can't starve); resume is now robust
     this._onVis = () => {
       if (!this.ctx) return;
-      if (document.hidden) this.ctx.suspend?.().catch(() => {});
-      else if (this.unlocked) this.ctx.resume?.().catch(() => {});
+      if (document.hidden) {
+        this._silentLoop(false);
+        this.ctx.suspend?.().catch(() => {});
+      } else this._wake('visible');
     };
     document.addEventListener('visibilitychange', this._onVis);
+    this._onPageShow = () => this._wake('pageshow');
+    window.addEventListener('pageshow', this._onPageShow);
+    window.addEventListener('focus', this._onPageShow);
+    this._timer = setInterval(() => {
+      try {
+        this._watch();
+      } catch (e) {
+        console.warn('[audio] watchdog error', e);
+      }
+    }, WATCHDOG_MS);
+    try {
+      navigator.audioSession?.addEventListener?.('statechange', () => {
+        // iOS 17+ interruption (call, Siri, alarm) ended → audioSession.state goes back to 'active'
+        if (navigator.audioSession.state !== 'interrupted') this._wake('audioSession');
+      });
+    } catch {
+      /* optional API */
+    }
+  }
+
+  /** iOS 17+/Safari: treat WebAudio as media playback so the ring/silent switch doesn't mute it. */
+  _audioSession() {
+    try {
+      const as = navigator.audioSession;
+      if (as && as.type !== 'playback') as.type = 'playback';
+    } catch {
+      /* optional API */
+    }
+  }
+
+  /** Play one silent sample inside a gesture — the classic iOS "unlock" that also warms the output. */
+  _prime() {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    try {
+      const b = ctx.createBuffer(1, 1, ctx.sampleRate);
+      const src = ctx.createBufferSource();
+      src.buffer = b;
+      src.connect(ctx.destination);
+      src.start(0);
+      this._primed = true;
+    } catch {
+      /* ignore */
+    }
+  }
+
+  /**
+   * iOS < 17 has no audioSession API: a looping silent <audio> element switches the page to the "playback" audio category so
+   * WebAudio is audible with the mute switch on. (Not attached to the DOM.)
+   */
+  _silentLoop(on) {
+    if (!PLATFORM.ios || navigator.audioSession) return;
+    try {
+      if (!on) {
+        this._silentEl?.pause();
+        return;
+      }
+      if (!this._silentEl) {
+        const n = 4000, hdr = 44;
+        const u = new Uint8Array(hdr + n).fill(0x80);
+        const w32 = (o, v) => { u[o] = v & 255; u[o + 1] = (v >> 8) & 255; u[o + 2] = (v >> 16) & 255; u[o + 3] = (v >> 24) & 255; };
+        const tag = (o, t) => { for (let i = 0; i < 4; i++) u[o + i] = t.charCodeAt(i); };
+        tag(0, 'RIFF'); w32(4, 36 + n); tag(8, 'WAVE'); tag(12, 'fmt '); w32(16, 16);
+        u[20] = 1; u[22] = 1; w32(24, 8000); w32(28, 8000); u[32] = 1; u[34] = 8; tag(36, 'data'); w32(40, n);
+        let bin = '';
+        for (let i = 0; i < u.length; i++) bin += String.fromCharCode(u[i]);
+        const a = new Audio('data:audio/wav;base64,' + btoa(bin));
+        a.loop = true;
+        a.volume = 0.02;
+        a.setAttribute('playsinline', '');
+        this._silentEl = a;
+      }
+      this._silentEl.play?.().catch(() => {});
+    } catch {
+      /* ignore */
+    }
+  }
+
+  /** Ask the context to run. Rate-limited unless this is a gesture / explicit wake. */
+  _resume(force = false) {
+    const ctx = this.ctx;
+    if (!ctx || ctx.state === 'running' || ctx.state === 'closed') return;
+    const now = performance.now();
+    if (!force && now - (this._resumeAt ?? -1e9) < 250) return;
+    this._resumeAt = now;
+    this.diag.resumes++;
+    try {
+      ctx.resume?.().catch(() => {});
+    } catch {
+      /* ignore */
+    }
+  }
+
+  /** Page became visible / focused / bfcache-restored / audio session ended: resume now and keep retrying with back-off until running. */
+  _wake(why) {
+    const ctx = this.ctx;
+    if (!ctx || !this.unlocked) return;
+    this.diag.last = 'wake:' + why;
+    if (!this._kicked) this._clockWall = performance.now();
+    this._silent = 0;
+    this._silentLoop(true);
+    this._audioSession();
+    clearTimeout(this._wakeTimer);
+    let n = 0;
+    const step = () => {
+      const c = this.ctx;
+      if (!c || document.hidden) return;
+      if (c.state === 'running') {
+        this._clockWall = performance.now();
+        return;
+      }
+      this._resume(true);
+      if (++n < 12) this._wakeTimer = setTimeout(step, Math.min(2000, 120 * 2 ** n));
+    };
+    step();
+  }
+
+  _onState(ctx) {
+    if (ctx !== this.ctx) return;
+    this.diag.stateChanges++;
+    this.diag.last = 'state:' + ctx.state;
+    if (!this._kicked) this._clockWall = performance.now(); // (a kick's own suspend/resume must not restart the frozen-clock timer)
+    // 'suspended' / 'interrupted' while the page is visible and we want sound → fight back (the hidden→suspend path is ours)
+    if (ctx.state !== 'running' && this.unlocked && !document.hidden) this._wake('state-' + ctx.state);
+  }
+
+  /** Peak amplitude of the last ~46 ms at the output, with NaN/Inf detection. */
+  _peak() {
+    if (!this.meterNode) return { peak: 1, bad: false };
+    const buf = this._meterBuf;
+    this.meterNode.getFloatTimeDomainData(buf);
+    let peak = 0, bad = false;
+    for (let i = 0; i < buf.length; i++) {
+      const v = buf[i];
+      if (v !== v || v === Infinity || v === -Infinity) {
+        bad = true;
+        break;
+      }
+      const a = v < 0 ? -v : v;
+      if (a > peak) peak = a;
+    }
+    return { peak, bad };
+  }
+
+  /**
+   * Tear the whole graph down and rebuild it (optionally on a brand-new AudioContext) and restart music + engines.
+   * Last resort for: closed context, frozen clock, silent/NaN-poisoned output.
+   */
+  _rebuild(reason, fresh = false) {
+    this.diag.rebuilds++;
+    this.diag.last = 'rebuild:' + reason + (fresh ? ':fresh' : '');
+    console.warn('[audio] rebuilding audio graph —', reason, fresh ? '(new context)' : '');
+    try {
+      this.music?.dispose();
+    } catch {
+      /* ignore */
+    }
+    try {
+      this._destroyEngines();
+    } catch {
+      /* ignore */
+    }
+    try {
+      this.master?.disconnect();
+    } catch {
+      /* ignore */
+    }
+    this._sfxState.clear();
+    this._sfxEnds = [];
+    this._cueAt.clear();
+    if (fresh) {
+      const old = this.ctx;
+      if (old) {
+        old.onstatechange = null;
+        try {
+          old.close?.().catch(() => {});
+        } catch {
+          /* ignore */
+        }
+      }
+      this.ctx = null;
+      if (!this._createContext()) return;
+      this._primed = false;
+      this._resume(true);
+    }
+    this._buildGraph();
+    this._lastWant = null;
+    this._silent = 0;
+    this._applyVolumes(true);
+    this._syncToState();
+    this._setPauseFx(this._paused);
+  }
+
+  /** 750 ms heartbeat, independent of requestAnimationFrame: keeps the context running and the graph audible. */
+  _watch() {
+    const ctx = this.ctx;
+    if (!ctx || !this.unlocked) return;
+    if (document.hidden) {
+      this._clockWall = performance.now();
+      this._silent = 0;
+      return;
+    }
+    if (ctx.state === 'closed') {
+      this._rebuild('context closed', true);
+      return;
+    }
+    const wall = performance.now();
+    if (ctx.state !== 'running') {
+      this._lastState = ctx.state;
+      this._clockWall = wall;
+      this._silent = 0;
+      this._resume();
+      return;
+    }
+    // ---- 1. frozen audio clock while 'running' (output device change / audio service restart) → kick, then new context
+    this._lastState = 'running';
+    if (ctx.currentTime !== this._clockT) {
+      this._clockT = ctx.currentTime;
+      this._clockWall = wall;
+      this._kicked = false;
+    } else if (wall - this._clockWall > 2000) {
+      this.diag.freezes++;
+      if (!this._kicked) {
+        this._kicked = true;
+        this.diag.last = 'kick:frozen-clock';
+        ctx.suspend?.().then(() => ctx.resume?.()).catch(() => {});
+      } else if (wall - this._clockWall > 5000) {
+        this._clockWall = wall;
+        this._rebuild('audio clock frozen', true);
+        return;
+      }
+      return;
+    }
+
+    // ---- 2. music scheduler alive?
+    const m = this.music;
+    const cur = m?.current;
+    if (cur && !cur.stopped && cur.nextTime < ctx.currentTime - 1.0) {
+      this.diag.schedKicks++;
+      m.tick();
+    }
+    if (cur && m && !m._timer) m.start();
+
+    // ---- 3. stuck mix state: duck / pause filter that never came back
+    const t = performance.now();
+    if (!this._paused && t > this._duckUntil && this.musicDuck.gain.value < 0.98) {
+      this.diag.duckFixes++;
+      const d = this.musicDuck.gain;
+      d.cancelScheduledValues(ctx.currentTime);
+      d.setValueAtTime(d.value, ctx.currentTime);
+      d.linearRampToValueAtTime(1, ctx.currentTime + 0.3);
+    }
+    if (!this._paused && t - this._pauseAt > 2500 && this.musicFilter.frequency.value < 0.7 * ctx.sampleRate * 0.49) {
+      this.diag.pauseFixes++;
+      this._setPauseFx(false);
+    }
+
+    // ---- 4. silent / NaN output although music should be audible
+    const audible = cur && !this.muted && this.master.gain.value > 0.02 && this.musicBus.gain.value > 0.02 && cur.bus.gain.value > 0.5 && m.currentAge > 2.5;
+    if (audible) {
+      const lv = this._peak();
+      if (lv.bad || lv.peak < 1e-5) {
+        this._silent++;
+        if (this._silent >= (lv.bad ? 1 : 4)) {
+          this.diag.silentHeals++;
+          this._healTries++;
+          this._rebuild(lv.bad ? 'non-finite output' : 'silent output', this._healTries >= 2);
+        }
+      } else {
+        this._silent = 0;
+        if (!this._goodSince) this._goodSince = t;
+        else if (t - this._goodSince > 8000) this._healTries = 0;
+      }
+    } else this._silent = 0;
   }
 
   _applyVolumes(instant = false) {
@@ -625,8 +1023,9 @@ export class AudioManager {
     const ctx = this.ctx;
     if (!ctx) return;
     const now = ctx.currentTime;
+    this._pauseAt = performance.now();
     this.musicFilter.frequency.cancelScheduledValues(now);
-    this.musicFilter.frequency.setTargetAtTime(paused ? 650 : 20000, now, paused ? 0.06 : 0.25);
+    this.musicFilter.frequency.setTargetAtTime(paused ? 650 : Math.min(20000, ctx.sampleRate * 0.49), now, paused ? 0.06 : 0.25);
     const d = this.musicDuck.gain;
     d.cancelScheduledValues(now);
     d.setValueAtTime(d.value, now);
@@ -667,7 +1066,7 @@ export class AudioManager {
     this._engines = {
       players: humans.map(() => new EngineVoice(ctx, this.engineBus, { player: true })),
       humans: humans.slice(),
-      cpus: Array.from({ length: nCpu }, () => ({ voice: new EngineVoice(ctx, this.engineBus, { player: false }), kart: null })),
+      cpus: Array.from({ length: nCpu }, () => ({ voice: new EngineVoice(ctx, this.engineBus, { player: false, lite: MOBILE }), kart: null })),
     };
     this._assignT = 0;
   }
@@ -690,8 +1089,10 @@ export class AudioManager {
 
   _kartRpm(kart, dt) {
     let r = this._rpm.get(kart);
-    if (r === undefined) r = rpmTarget(kart);
-    const tgt = rpmTarget(kart);
+    let tgt = rpmTarget(kart);
+    if (!Number.isFinite(tgt)) tgt = 0.2;
+    if (r === undefined || !Number.isFinite(r)) r = tgt; // a NaN in the smoothed value would stick forever
+    if (!(dt > 0)) dt = 0;
     const lambda = tgt > r ? 9 : 4;
     r += (tgt - r) * (1 - Math.exp(-lambda * dt));
     this._rpm.set(kart, r);
@@ -797,7 +1198,7 @@ export class AudioManager {
     if (this._resumeT > 0) return;
     this._resumeT = 0.5;
     if (navigator.userActivation && !navigator.userActivation.hasBeenActive) return;
-    this.ctx.resume?.().catch(() => {});
+    this._resume(true);
   }
 
   // ==================================================================================================
@@ -819,7 +1220,14 @@ export class AudioManager {
   _update(dt) {
     const ctx = this.ctx;
     if (ctx.state !== 'running' && this.unlocked && !document.hidden) this._tryResume(dt);
+    this.music?.pump();
     const g = this.game;
+    // heal a missed GAME_PAUSE event: a stuck "paused" mix (muffled music, silent engines) or a missing one
+    if (g.state === 'race' && typeof g.paused === 'boolean' && g.paused !== this._paused) {
+      this._paused = g.paused;
+      this._setPauseFx(g.paused);
+      this.diag.pauseFixes++;
+    }
     const humans = this._humans();
     const pm = this._pendingMusic;
     if (pm && performance.now() >= pm.at) {
@@ -856,6 +1264,15 @@ export class AudioManager {
       } else r.active = false;
     } else if (this._starActive) {
       this._starActive = false;
+    }
+    // frozen clock: don't pile automation events onto parameters that cannot advance
+    if (ctx.state !== 'running') return;
+    if (MOBILE) {
+      // 30 Hz is plenty for engine pitch/filters (all params are smoothed) and halves the AudioParam traffic
+      this._engDt += dt;
+      if ((this._engFrame++ & 1) === 0) return;
+      dt = this._engDt;
+      this._engDt = 0;
     }
     this._updateEngines(dt);
   }

@@ -45,7 +45,9 @@ export class Effects {
     this.events = game.events;
     this.qscale = (QUALITY[game.settings?.quality] ?? QUALITY.high).particles;
     this.active = false;
-    this.ps = new ParticleSystem({ additive: 7000, alpha: 3500, overlay: 700 });
+    // phones: smaller pooled layers (fewer instanced vertices per frame, less overdraw headroom needed)
+    this.mobile = !!game.platform?.mobile || game.settings?.quality === 'mobile';
+    this.ps = new ParticleSystem(this.mobile ? { additive: 2400, alpha: 1400, overlay: 300 } : { additive: 7000, alpha: 3500, overlay: 700 });
     this.add = this.ps.additive;
     this.alpha = this.ps.alpha;
     this.ov = this.ps.overlay;
@@ -113,6 +115,7 @@ export class Effects {
     this.qscale = (QUALITY[g.settings?.quality] ?? QUALITY.high).particles;
     const cams = this._cams();
     for (const k of g.karts) if (k.model) this._emitKart(dt, k, cams);
+    if (g.settings?.quality === 'mobile') this._kartLod(cams[0]);
     // pooled point light flash
     if (this.lightI > 0.5) {
       this.lightI *= Math.exp(-dt * 8.5);
@@ -136,6 +139,19 @@ export class Effects {
     if (views && views.length > 1) for (const v of views) out.push(v.camera.position);
     else out.push(g.camera.position);
     return out;
+  }
+
+  /** Mobile: karts further than ~14 m from the camera swap to the merged one-draw-call model with no shadow caster. */
+  _kartLod(cam) {
+    const ks = this.game.karts;
+    for (let i = 0; i < ks.length; i++) {
+      const k = ks[i], m = k.model;
+      if (!m || !m.farMesh) continue;
+      const d2 = k.position.distanceToSquared(cam);
+      const special = k.hit || (k.respawnTime ?? 0) > 0 || k.finished;
+      const far = !special && !k.isPlayer && (m.isFar ? d2 > 11.5 * 11.5 : d2 > 14 * 14);
+      m.setLod(far);
+    }
   }
 
   /** Human karts (split-screen aware). */

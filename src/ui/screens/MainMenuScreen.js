@@ -5,6 +5,7 @@ import { Screen } from './Screen.js';
 import { Nav } from '../nav.js';
 import { h, fromHTML } from '../dom.js';
 import { uiIcon, LOGO_BOLT } from '../icons.js';
+import { PLATFORM } from '../../core/platform.js';
 
 const ITEMS = [
   {
@@ -36,6 +37,7 @@ export class MainMenuScreen extends Screen {
 
   build() {
     this.desc = h('div.menu-desc');
+    if (PLATFORM.touch) ITEMS.find((x) => x.id === 'controls').sub = PLATFORM.mobile ? 'Touch layout & more' : 'Keyboard, gamepad & touch';
     const buttons = ITEMS.map((it, i) =>
       h('div.btn.a-left', {
         style: { '--i': i + 2, '--accent': it.accent[0], '--accent2': it.accent[1] },
@@ -70,6 +72,14 @@ export class MainMenuScreen extends Screen {
     return [{ action: 'navV', label: 'Navigate' }, { action: 'confirm', label: 'Select' }, { action: 'back', label: 'Title' }];
   }
 
+  touchHint() {
+    return '';
+  }
+
+  get backLabel() {
+    return 'Title';
+  }
+
   onShow() {
     this.ui.showroom('menu');
   }
@@ -80,7 +90,10 @@ export class MainMenuScreen extends Screen {
       case 'gp':
       case 'quick':
         ui.flow.mode = id;
-        ui.goto('players');
+        if (PLATFORM.mobile) {
+          ui.flow.players = 1; // phones are single player: skip the Players step
+          ui.goto('cc');
+        } else ui.goto('players');
         break;
       case 'timetrial':
         ui.flow.mode = 'timetrial';

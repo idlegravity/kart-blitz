@@ -23,6 +23,7 @@ import { TUNE, computeStats, ccSpeedMul, turnRateAt, driftBaseRate, driftSteerMu
 import { getRacingLine } from './racingLine.js';
 import { makeProfile } from './aiProfile.js';
 import { AIItemBrain } from './aiItems.js';
+import { PLATFORM } from '../core/platform.js';
 
 /** Tunables (kept together so feel-tuning never means hunting through the logic). */
 export const AI_TUNE = {
@@ -40,6 +41,8 @@ export const AI_TUNE = {
     aheadRange: [40, 300],
     response: 0.6, //       1/s smoothing
   },
+  // phones (docs/MOBILE.md §3.5): touch steering is coarser, so the catch-up push is a notch gentler at the fast classes
+  rubberMobile: { up: { 150: 1.075, 200: 1.08 } },
   skillPace: [0.955, 1.0], // aiSpeedMul factor from skill 0..1
   stuckSpeed: 3,
   stuckTime: 1.5,
@@ -828,7 +831,7 @@ export class AIController {
     let target = 1;
     if (!this.autopilot && player && game.race.hasStarted) {
       const cc = game.raceConfig?.cc ?? 150;
-      const up = T.rubber.up[cc] ?? 1.08, down = T.rubber.down[cc] ?? 0.93;
+      const up = (PLATFORM.mobile ? T.rubberMobile.up[cc] : undefined) ?? T.rubber.up[cc] ?? 1.08, down = T.rubber.down[cc] ?? 0.93;
       const gap = k.progress - player.progress; // + = we are ahead of the player
       if (gap < 0) target = 1 + (up - 1) * smoothstep(T.rubber.behindRange[0], T.rubber.behindRange[1], -gap);
       else target = 1 - (1 - down) * smoothstep(T.rubber.aheadRange[0], T.rubber.aheadRange[1], gap);

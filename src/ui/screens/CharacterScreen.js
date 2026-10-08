@@ -59,6 +59,10 @@ export class CharacterScreen extends Screen {
     );
   }
 
+  touchHint() {
+    return ''; // the grid fills the screen on phones; the Back button and the cards themselves are self-explanatory
+  }
+
   hints() {
     return [{ action: 'nav', label: 'Choose' }, { action: 'confirm', label: 'Confirm' }, { action: 'back', label: 'Back' }];
   }

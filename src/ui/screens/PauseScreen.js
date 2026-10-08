@@ -15,6 +15,10 @@ const ITEMS = [
 ];
 
 export class PauseScreen extends Screen {
+  get backButton() {
+    return false;
+  }
+
   constructor(ui) {
     super(ui, 'pause', { layer: 'overlay' });
     this.inputDelay = 0.15;

@@ -26,6 +26,7 @@ export class PlayerController {
     k.brake = i.brake;
     k.steer = i.steer;
     k.analog = i.steerAnalog === true;
+    k.assist = i.steerAssist === true ? 1 : 0; // mobile touch steering assist (Kart._updateYaw), 0 on desktop
     k.drift = i.drift || i.pressed('drift');
     k.item = i.item || i.pressed('item');
     k.lookBack = i.lookBack;

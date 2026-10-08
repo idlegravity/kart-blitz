@@ -21,6 +21,7 @@ import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { FXAAPass } from 'three/addons/postprocessing/FXAAPass.js';
 import { GradeShader } from './postShaders.js';
+import { MobilePost } from './MobilePost.js';
 import { clamp, damp } from '../core/math.js';
 import { MAX_PLAYERS } from '../core/constants.js';
 
@@ -59,23 +60,11 @@ export class PostFX {
     this.quality = game.settings?.quality ?? 'high';
     r.info.autoReset = false;
 
-    const size = r.getSize(new THREE.Vector2());
-    // the composer treats a supplied target's size as LOGICAL size and applies the pixel ratio itself
-    const rt = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: 0 });
-    this.composer = new EffectComposer(r, rt);
-    this.composer.setPixelRatio(r.getPixelRatio());
-    this.composer.setSize(size.x, size.y);
-
-    this.scenePass = new SceneRenderPass(game.scene, game.camera);
-    this.bloom = new UnrealBloomPass(new THREE.Vector2(size.x, size.y), 0.42, 0.55, 1.05);
-    this.grade = new ShaderPass(GradeShader);
-    this.output = new OutputPass();
-    this.fxaa = new FXAAPass();
-    const u = this.grade.uniforms;
-    u.uCenter.value = new THREE.Vector2(0.5, 0.42);
-    u.uFlashColor.value = new THREE.Color(1, 1, 1);
-    u.uTint.value = new THREE.Color(1, 1, 1);
-    for (const p of [this.scenePass, this.bloom, this.grade, this.output, this.fxaa]) this.composer.addPass(p);
+    /** 'mobile' preset → cheap single-target pipeline (MobilePost); everything else → EffectComposer pipeline. */
+    this.mobile = this.quality === 'mobile';
+    this.composer = null;
+    this._mp = null;
+    this._ensurePipeline();
 
     this.look = { ...LOOKS.race };
     this._lookName = 'race';
@@ -94,6 +83,49 @@ export class PostFX {
     this._splitH = 0;
     this._navy = new THREE.Color(OVERVIEW_BG);
     this._applyQuality();
+  }
+
+  /** Create the pipeline objects for the current mode (lazy: a phone never allocates the desktop composer). */
+  _ensurePipeline() {
+    const r = this.renderer;
+    const size = r.getSize(new THREE.Vector2());
+    if (this.mobile) {
+      if (!this._mp) this._mp = new MobilePost(r);
+      const qs = new URLSearchParams(location.search);
+      this._mp.bloomOn = qs.get('bloom') !== '0';
+      this._mp.fxaaOn = qs.get('fxaa') !== '0';
+      this._mpSize();
+      return;
+    }
+    if (this.composer) return;
+    // the composer treats a supplied target's size as LOGICAL size and applies the pixel ratio itself
+    const rt = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: 0 });
+    this.composer = new EffectComposer(r, rt);
+    this.composer.setPixelRatio(r.getPixelRatio());
+    this.composer.setSize(size.x, size.y);
+
+    this.scenePass = new SceneRenderPass(this.game.scene, this.game.camera);
+    this.bloom = new UnrealBloomPass(new THREE.Vector2(size.x, size.y), 0.42, 0.55, 1.05);
+    this.gradePass = new ShaderPass(GradeShader);
+    this.output = new OutputPass();
+    this.fxaa = new FXAAPass();
+    const u = this.gradePass.uniforms;
+    u.uCenter.value = new THREE.Vector2(0.5, 0.42);
+    u.uFlashColor.value = new THREE.Color(1, 1, 1);
+    u.uTint.value = new THREE.Color(1, 1, 1);
+    for (const p of [this.scenePass, this.bloom, this.gradePass, this.output, this.fxaa]) this.composer.addPass(p);
+    this._applyQuality();
+  }
+
+  _mpSize() {
+    const r = this.renderer;
+    const s = r.getDrawingBufferSize(_sz);
+    this._mp.setSize(s.x, s.y);
+  }
+
+  /** Grade uniforms of the active pipeline. */
+  get gradeUniforms() {
+    return this.mobile ? this._mp.uniforms : this.gradePass.uniforms;
   }
 
   // ---------------------------------------------------------------------------------------------------------------
@@ -122,7 +154,7 @@ export class PostFX {
     this.hitV = Math.max(0, this.hitV - dt * 2.2);
     this.time += dt;
 
-    const u = this.grade.uniforms;
+    const u = this.gradeUniforms;
     const L = this.look;
     const size = r.getSize(_sz);
     u.uAspect.value = size.x / Math.max(1, size.y);
@@ -136,6 +168,20 @@ export class PostFX {
     u.uSaturation.value = L.saturation;
     u.uContrast.value = L.contrast;
     u.uExposure.value = L.exposure;
+    if (this.mobile) {
+      const mp = this._mp;
+      mp.bloomStrength = L.bloom;
+      mp.threshold = L.threshold;
+      mp.knee = L.knee;
+      r.info.reset();
+      mp.renderScene(scene, camera);
+      this.stats.calls = r.info.render.calls;
+      this.stats.triangles = r.info.render.triangles;
+      mp.finish();
+      r.info.render.calls = this.stats.calls;
+      r.info.render.triangles = this.stats.triangles;
+      return;
+    }
     this.bloom.strength = L.bloom;
     this.bloom.radius = L.radius;
     this.bloom.threshold = L.threshold;
@@ -187,7 +233,7 @@ export class PostFX {
     const g = this.game;
     const r = this.renderer;
     if (!views || !views.length) return this.render(scene, g.camera, dt);
-    if (views.length === 1 && !g.overviewRect) return this.render(scene, views[0].camera, dt);
+    if ((views.length === 1 && !g.overviewRect) || this.mobile) return this.render(scene, views[0].camera, dt); // phones are single player
     const n = views.length;
     const pr = r.getPixelRatio();
     const buf = r.getDrawingBufferSize(_sz);
@@ -215,7 +261,7 @@ export class PostFX {
       Object.assign(this.look, LOOKS[this._lookName]);
     }
     const L = this.look;
-    const u = this.grade.uniforms;
+    const u = this.gradeUniforms;
     const c = this.composer;
     const wasScissor = r.getScissorTest();
     const prevAuto = r.autoClear;
@@ -314,6 +360,10 @@ export class PostFX {
   }
 
   setSize(w, h) {
+    if (this.mobile) {
+      this._mpSize();
+      return;
+    }
     if (this._split) {
       // the next renderViews() re-sizes the composer to the new viewports
       this._split = -1;
@@ -328,10 +378,27 @@ export class PostFX {
   setQuality(q) {
     if (!q || q === this.quality) return;
     this.quality = q;
+    const mobile = q === 'mobile';
+    if (mobile !== this.mobile) {
+      // switching pipelines: free the one we leave, build the one we enter
+      if (this._split) this._leaveSplit();
+      this.mobile = mobile;
+      if (mobile) {
+        this.composer?.dispose();
+        for (const p of [this.bloom, this.gradePass, this.output, this.fxaa]) p?.dispose?.();
+        this.composer = this.bloom = this.gradePass = this.output = this.fxaa = this.scenePass = null;
+      } else {
+        this._mp?.dispose();
+        this._mp = null;
+      }
+      this._ensurePipeline();
+      return;
+    }
     this._applyQuality();
   }
 
   _applyQuality() {
+    if (this.mobile || !this.composer) return;
     const q = this.quality;
     const max = this.renderer.capabilities.maxSamples ?? 4;
     const buf = this.renderer.getDrawingBufferSize(_sz);
@@ -386,7 +453,7 @@ export class PostFX {
   _applyMain(a, decay, color) {
     this.flashV = Math.max(this.flashV, a);
     this.flashDecay = decay;
-    this.grade.uniforms.uFlashColor.value.set(color);
+    this.gradeUniforms.uFlashColor.value.set(color);
   }
 
   /** View slot for a human kart (-1 for CPUs / unknown). */
@@ -396,14 +463,29 @@ export class PostFX {
     return -1;
   }
 
+  /** WebGL context restored (Game may call this): rebuild every GPU resource of the active pipeline. */
+  onContextRestored() {
+    if (this.mobile) {
+      this._mp?.dispose();
+      this._mp = null;
+    } else {
+      this.composer?.dispose();
+      this.composer = null;
+    }
+    this._split = 0;
+    this._ensurePipeline();
+    this.setSize(...this.renderer.getSize(_sz).toArray());
+  }
+
   /** Override parts of the current look (e.g. the Showroom tints its grade). */
   setLook(partial) {
     Object.assign(this.look, partial);
   }
 
   dispose() {
-    this.composer.dispose();
-    for (const p of [this.bloom, this.grade, this.output, this.fxaa]) p.dispose?.();
+    this.composer?.dispose();
+    this._mp?.dispose();
+    for (const p of [this.bloom, this.gradePass, this.output, this.fxaa]) p?.dispose?.();
   }
 }
 

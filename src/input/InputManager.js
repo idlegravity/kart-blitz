@@ -110,6 +110,10 @@ export class InputManager {
     this.steerAnalog = false;
     /** True while at least one gamepad is connected. */
     this.gamepadConnected = false;
+    /** Mobile steering assist is on (touch controls live on a phone); PlayerController copies it to kart.input.assist. */
+    this.steerAssist = false;
+    /** On-screen touch controls (TouchControls) — created on touch devices only (docs/MOBILE.md); undefined on desktop. */
+    this.touch = undefined;
 
     // ---- keyboard ----
     this.keys = new Set(); // held key codes
@@ -157,6 +161,7 @@ export class InputManager {
     window.addEventListener('gamepadconnected', this._onPadConnect);
     window.addEventListener('gamepaddisconnected', this._onPadConnect);
     this._refreshPads();
+    this._initTouch(game);
 
     // gamepad haptics for the player kart (no-op without a pad / actuator)
     this._offs = [];
@@ -181,8 +186,24 @@ export class InputManager {
     }
   }
 
+  /** Create the touch overlay on touch devices. Platform detection is imported lazily and failure-proof (Node tests). */
+  _initTouch(game) {
+    if (typeof document === 'undefined' || typeof document.createElement !== 'function') return;
+    import('../core/platform.js')
+      .then(async (m) => {
+        const platform = game?.platform ?? m.PLATFORM;
+        if (!platform?.touch || this._disposed) return;
+        const { TouchControls } = await import('./TouchControls.js');
+        if (this._disposed) return;
+        this.touch = new TouchControls(game, this, platform);
+      })
+      .catch(() => {});
+  }
+
   /** Remove all listeners. */
   dispose() {
+    this._disposed = true;
+    this.touch?.dispose();
     window.removeEventListener('keydown', this._onKeyDown);
     window.removeEventListener('keyup', this._onKeyUp);
     window.removeEventListener('blur', this._onBlur);
@@ -269,6 +290,7 @@ export class InputManager {
 
   /** Vibrate the active gamepad (strong = low-frequency motor, weak = high-frequency), 0..1, milliseconds. */
   rumble(strong = 0.5, weak = 0.5, ms = 150) {
+    if (this.lastDevice === 'touch') return this.touch?.rumble(strong, weak, ms);
     if (this.lastDevice !== 'gamepad' || !this.gamepadConnected || this.game?.settings?.rumble === false) return;
     const now = performance.now();
     if (now - this._lastRumble < 60) return;
@@ -295,13 +317,31 @@ export class InputManager {
       return false;
     };
 
-    // held state per action = keyboard || gamepad
+    // on-screen touch controls (phones): merged exactly like another device
+    const tp = this.touch ? this.touch.poll(dt) : null;
+    const tOn = tp !== null && tp.active;
+
+    // held state per action = keyboard || gamepad (|| touch)
     const held = this._held;
     for (const a of ACTIONS) held[a] = kb(a) || !!pad[a];
+    if (tp) {
+      if (tOn) {
+        if (tp.drift) held.drift = true;
+        if (tp.item) held.item = true;
+        if (tp.lookBack) held.lookBack = true;
+        if (tp.latchDrift) this._latch.drift = true;
+        if (tp.latchItem) this._latch.item = true;
+      }
+      if (tp.latchConfirm) this._latch.confirm = true;
+    }
     // analog values that have no pad boolean
     const padThrottle = pad.throttle, padBrake = pad.brake;
     held.throttle = held.throttle || padThrottle > 0.05;
     held.brake = held.brake || padBrake > 0.05;
+    if (tOn) {
+      held.throttle = held.throttle || tp.throttle > 0.05;
+      held.brake = held.brake || tp.brake > 0.05;
+    }
 
     // edges (+ presses latched between frames), then consume the latches
     for (const a of ACTIONS) {
@@ -323,17 +363,21 @@ export class InputManager {
     for (const a of NAV) this._padNav[a] = pad[a];
 
     // ---- continuous driving values ----
-    this.throttle = clamp(Math.max(kb('throttle') ? 1 : 0, padThrottle), 0, 1);
-    this.brake = clamp(Math.max(kb('brake') ? 1 : 0, padBrake), 0, 1);
+    this.throttle = clamp(Math.max(kb('throttle') ? 1 : 0, padThrottle, tOn ? tp.throttle : 0), 0, 1);
+    this.brake = clamp(Math.max(kb('brake') ? 1 : 0, padBrake, tOn ? tp.brake : 0), 0, 1);
     // keyboard steer: if both directions are held the most recent press wins
     let ks = 0;
     const l = K.has('KeyA') || K.has('ArrowLeft'), r = K.has('KeyD') || K.has('ArrowRight');
     if (l && r) ks = this._rightT >= this._leftT ? 1 : -1;
     else ks = (r ? 1 : 0) - (l ? 1 : 0);
     this._padSteer = pad.steer;
-    const fromPad = Math.abs(ks) < Math.abs(pad.steer);
-    this.steer = clamp(fromPad ? pad.steer : ks, -1, 1);
-    this.steerAnalog = fromPad && Math.abs(pad.steer) > 0 && Math.abs(pad.steer) < 0.999;
+    let ps = pad.steer;
+    // touch steering competes with the pad like a second analog stick (largest magnitude wins)
+    if (tOn && Math.abs(tp.steer) > Math.abs(ps)) ps = tp.steer;
+    const fromPad = Math.abs(ks) < Math.abs(ps);
+    this.steer = clamp(fromPad ? ps : ks, -1, 1);
+    this.steerAnalog = fromPad && Math.abs(ps) > 0 && Math.abs(ps) < 0.999 && (ps !== pad.steer ? tp.steerAnalog : true);
+    this.steerAssist = tOn && tp.assist === true;
     // taps that landed between two frames still read as down for one frame
     this.drift = held.drift || this._pressed.drift;
     this.item = held.item || this._pressed.item;

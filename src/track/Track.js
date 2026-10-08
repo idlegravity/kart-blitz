@@ -17,6 +17,7 @@
 import * as THREE from 'three';
 import { forwardToYaw } from '../core/math.js';
 import { QUALITY } from '../core/constants.js';
+import { MOBILE_CASTERS } from './scatter.js';
 import { Centerline, circDelta, inRange } from './centerline.js';
 import { RoadField, Terrain } from './terrain.js';
 import { MatLib } from './materials.js';
@@ -220,6 +221,11 @@ export class Track {
     const quality = QUALITY[game.settings?.quality] ?? QUALITY.high;
     this.quality = quality;
     this.density = quality.decorDensity ?? 1;
+    /** Phone preset: lighter terrain, shorter decor draw distance, tighter fog + shadow box, few shadow casters. */
+    const mobile = (this.mobile = !!quality.mobile);
+    if (mobile) this.density = Math.min(this.density, 0.4);
+    /** mobile: beyond fog.far the world is invisible anyway → never draw further than this */
+    this.mobileFar = mobile ? this.themeDef.fog.near + 620 : Infinity;
     const th = this.themeDef;
     const cl = this.cl;
     const world = WORLDS[this.theme] ?? WORLDS.meadow;
@@ -229,7 +235,7 @@ export class Track {
 
     // ---- atmosphere ----
     scene.background = new THREE.Color(th.fog.color);
-    scene.fog = new THREE.Fog(th.fog.color, th.fog.near, th.fog.far);
+    scene.fog = new THREE.Fog(th.fog.color, th.fog.near, mobile ? Math.min(th.fog.far, th.fog.near + 560) : th.fog.far);
     const sky = createSky(th.sky, this.sunDirection);
     this.sky = sky;
     this.group.add(sky.mesh);
@@ -247,7 +253,7 @@ export class Track {
     sun.castShadow = true;
     const size = quality.shadowMapSize ?? 2048;
     sun.shadow.mapSize.set(size, size);
-    this.shadowHalf = 60;
+    this.shadowHalf = mobile ? 46 : 60;
     const sc = sun.shadow.camera;
     sc.left = -this.shadowHalf; sc.right = this.shadowHalf; sc.top = this.shadowHalf; sc.bottom = -this.shadowHalf;
     sc.near = 5; sc.far = 340;
@@ -289,11 +295,21 @@ export class Track {
     }
 
     // ---- theme world (walls, decor, landmarks) ----
-    world.build?.(this, { mats, quality, density: this.density, scene });
+    world.build?.(this, { mats, quality, density: this.density, scene, mobile });
+    if (mobile) this._mobileShadowCasters();
 
     scene.add(this.group);
     this.built = true;
     this.update(0, null);
+  }
+
+  /** Mobile: only big silhouettes cast (instanced sets are already filtered by name in InstanceSet). */
+  _mobileShadowCasters() {
+    this.group.traverse((o) => {
+      if (!o.castShadow) return;
+      if (o.isInstancedMesh) return;
+      if (!MOBILE_CASTERS.has(o.name) && o.name !== 'deck') o.castShadow = false;
+    });
   }
 
   /** Add a mesh to the track group with shadow flags. */

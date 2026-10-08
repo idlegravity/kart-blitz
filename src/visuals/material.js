@@ -172,7 +172,7 @@ export function createKartMaterial(uniforms, { quality = 'high' } = {}) {
     vertexColors: true,
     roughness: 0.6,
     metalness: 0,
-    clearcoat: quality === 'low' ? 0 : 1,
+    clearcoat: quality === 'low' || quality === 'mobile' ? 0 : 1,
     clearcoatRoughness: 0.07,
     envMapIntensity: 1,
   });

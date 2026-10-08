@@ -16,6 +16,7 @@
 import * as THREE from 'three';
 import { EVT } from '../core/events.js';
 import { INTRO_DURATION } from '../core/constants.js';
+import { PLATFORM } from '../core/platform.js';
 import { UP, clamp, clamp01, lerp, damp, dampFactor, smoothstep, wrapAngle, angleDiff } from '../core/math.js';
 
 // ------------------------------------------------------------------------------------------------ tuning
@@ -62,6 +63,10 @@ export const CAM = {
   rumblePos: 0.035,
   rumbleRoll: 0.004,
   rumbleFreq: 95,
+  // phones (docs/MOBILE.md): only on PLATFORM.mobile, scaled in by how wide the viewport is (aspect 1.85 -> 2.15+).
+  // Narrower vertical FOV keeps the horizontal FOV sane on 2.0-2.3 screens, the kart sits lower and a bit smaller so
+  // the thumbs and HUD have room.
+  mobile: { fovScale: 0.93, dist: 1.1, height: 1.07, lookUp: 0.55 },
   // suspension-style dip of the vertical reference on hard landings (m/s per m/s of impact)
   landDip: 0.11,
 };
@@ -142,6 +147,8 @@ export class CameraController {
     this._poseFov = CAM.baseFov; // last pose FOV before viewport adaptation
     this._wideT = 0; // 0..1 how far the viewport is past the "very wide" aspect (framing adaptation)
     this._compactT = 0; // 0..1 how small the viewport is (quad)
+    this._mobT = 0; // 0..1 phone framing weight (PLATFORM.mobile and a wide aspect)
+    this._isMobile = !!(game.platform ?? PLATFORM).mobile;
     /** @type {import('../kart/Kart.js').Kart|null} */
     this.target = null;
     /** 'intro' | 'chase' | 'finish' | 'orbit' */
@@ -550,7 +557,7 @@ export class CameraController {
     out.pos.set(k.position.x - fx * dd, yr + CAM.height * fr.height, k.position.z - fz * dd);
     const ky = this._falling ? Math.max(k.position.y, yr - 5) : k.position.y; // (a falling kart may leave the frame)
     const kyLag = ky - yr; // how far the real kart is above the smoothed reference
-    const ly = yr + CAM.lookUp + kyLag * 0.6;
+    const ly = yr + CAM.lookUp + CAM.mobile.lookUp * this._mobT + kyLag * 0.6;
     out.look.set(k.position.x + fx * CAM.lookAhead + rx * this._lead.x, ly, k.position.z + fz * CAM.lookAhead + rz * this._lead.x);
     out.roll = this._roll.x;
     out.fov = this._fov.x;
@@ -657,14 +664,15 @@ export class CameraController {
     }
     this._compactT = clamp01((0.5 - area) / 0.25);
     const w = this._wideT, c = this._compactT;
-    return { dist: 1 - 0.12 * c + 0.04 * w, height: 1 + 0.22 * w - 0.06 * c };
+    const m = (this._mobT = this._isMobile ? smoothstep(1.85, 2.15, a) : 0);
+    return { dist: 1 - 0.12 * c + 0.04 * w + (CAM.mobile.dist - 1) * m, height: 1 + 0.22 * w - 0.06 * c + (CAM.mobile.height - 1) * m };
   }
 
   /** Adapt the vertical FOV: keep a sensible horizontal FOV on very wide views, a bit tighter on small ones. */
   _adaptFov(fov) {
-    const w = this._wideT, c = this._compactT;
-    if (w <= 0 && c <= 0) return fov;
-    const k = lerp(1, 0.62, w) * lerp(1, 0.93, c);
+    const w = this._wideT, c = this._compactT, m = this._mobT;
+    if (w <= 0 && c <= 0 && m <= 0) return fov;
+    const k = lerp(1, 0.62, w) * lerp(1, 0.93, c) * lerp(1, CAM.mobile.fovScale, m);
     const half = Math.atan(Math.tan((fov * Math.PI) / 360) * k);
     return (half * 360) / Math.PI;
   }

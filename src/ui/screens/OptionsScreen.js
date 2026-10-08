@@ -8,6 +8,7 @@ import { Nav } from '../nav.js';
 import { h, clamp } from '../dom.js';
 import { uiIcon } from '../icons.js';
 import { head } from '../parts.js';
+import { PLATFORM } from '../../core/platform.js';
 
 const ROWS = [
   { key: 'masterVolume', type: 'slider', label: 'Master Volume', icon: 'speaker', accent: ['#ffd23f', '#ff9a1c'] },
@@ -18,6 +19,21 @@ const ROWS = [
   { key: 'cc', type: 'seg', label: 'Default Class', icon: 'gauge', accent: ['#ffb45c', '#ff7a1a'], options: [[50, '50'], [100, '100'], [150, '150'], [200, '200']] },
 ];
 
+/** Touch-only rows (settings added for phones, docs/MOBILE.md §1). Listed first on phones. */
+const TOUCH_ROWS = [
+  { key: 'touchSteer', type: 'seg', label: 'Steering', icon: 'steer', accent: ['#6df3ff', '#1f9dff'], options: [['stick', 'Stick'], ['tilt', 'Tilt'], ['buttons', 'Buttons']], tilt: true },
+  { key: 'autoAccel', type: 'toggle', label: 'Auto-accelerate', short: 'Auto-gas', icon: 'bolt', accent: ['#7af79a', '#1fbf55'] },
+  { key: 'haptics', type: 'toggle', label: 'Haptics', icon: 'vibrate', accent: ['#c9a6ff', '#7a3ef0'], needs: () => typeof navigator.vibrate === 'function' },
+  { key: 'leftHanded', type: 'toggle', label: 'Left-handed', icon: 'hand', accent: ['#ffd23f', '#ff9a1c'] },
+];
+
+const rowsFor = () => {
+  if (!PLATFORM.touch) return ROWS;
+  const touch = TOUCH_ROWS.filter((r) => !r.needs || r.needs());
+  const base = ROWS.map((r) => (r.key === 'quality' ? { ...r, options: [['mobile', 'Mobile'], ['low', 'Low'], ['medium', 'Med'], ['high', 'High']] } : r));
+  return [...touch, ...base];
+};
+
 export class OptionsScreen extends Screen {
   constructor(ui, name = 'options', opts = {}) {
     super(ui, name, opts);
@@ -26,7 +42,7 @@ export class OptionsScreen extends Screen {
 
   build() {
     this.headEl = head('Settings', 'Options');
-    this.rows = ROWS.map((r, i) => this._buildRow(r, i));
+    this.rows = rowsFor().map((r, i) => this._buildRow(r, i));
     this.panel = h('div.opt-panel.panel.a-left', this.headEl, h('div.opt-list', this.rows.map((r) => r.el)));
     if (this.layerName === 'overlay') this.root.append(h('div.pause__dim'));
     this.root.append(this.panel);
@@ -49,7 +65,7 @@ export class OptionsScreen extends Screen {
     const el = h('div.btn.btn--opt.a-left', { style: { '--i': i + 2, '--accent': def.accent[0], '--accent2': def.accent[1] }, role: 'button' },
       h('div.btn__bg'), h('div.btn__shine'),
       h('div.btn__icon', { html: uiIcon(def.icon) }),
-      h('div.btn__label.opt__label', def.label));
+      h('div.btn__label.opt__label', PLATFORM.mobile && def.short ? def.short : def.label));
     // `click` is only defined for rows whose own child controls handle pointer input; others fall back to activate()
     const row = { def, el, refresh() {}, adjust: () => false, activate() {}, click: null };
 
@@ -101,6 +117,7 @@ export class OptionsScreen extends Screen {
         o.addEventListener('click', (e) => {
           e.stopPropagation();
           set(value);
+          if (def.tilt && value === 'tilt') this._askTilt(); // iOS needs the permission prompt inside this tap
           this.game.events.emit(EVT.UI_CONFIRM, {});
         });
         return { o, value };
@@ -116,7 +133,14 @@ export class OptionsScreen extends Screen {
         if (n !== idx) set(opts[n].value);
         return true;
       };
-      row.activate = () => row.adjust(1) || true;
+      row.activate = () => {
+        if (!PLATFORM.mobile) return row.adjust(1) || true;
+        const idx = Math.max(0, opts.findIndex((x) => x.value === get()));
+        const next = opts[(idx + 1) % opts.length].value;
+        set(next); // phones: tapping the row (not a segment) cycles through the choices
+        if (def.tilt && next === 'tilt') this._askTilt();
+        return true;
+      };
       row.click = () => {};
     } else {
       const knob = h('i');
@@ -141,6 +165,13 @@ export class OptionsScreen extends Screen {
     for (const r of this.rows) r.refresh();
   }
 
+  _askTilt() {
+    try {
+      const p = this.game.input?.touch?.requestTiltPermission?.();
+      p?.catch?.(() => {});
+    } catch { /* unsupported */ }
+  }
+
   _tick() {
     const now = performance.now();
     if (now - this._sfxAt < 90) return;
@@ -151,6 +182,10 @@ export class OptionsScreen extends Screen {
   hints() {
     // in the pause overlay Esc is owned by Game (it resumes), so Back is Backspace / gamepad B
     return [{ action: 'navV', label: 'Select' }, { action: 'navH', label: 'Adjust' }, { action: this.layerName === 'overlay' ? 'backAlt' : 'back', label: 'Back' }];
+  }
+
+  touchHint() {
+    return '';
   }
 
   onShow(params) {

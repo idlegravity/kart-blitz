@@ -5,6 +5,7 @@ import { Screen } from './Screen.js';
 import { EVT } from '../../core/events.js';
 import { h, fromHTML } from '../dom.js';
 import { LOGO_BOLT, actionGlyph } from '../icons.js';
+import { PLATFORM } from '../../core/platform.js';
 
 const SPARK = '<svg viewBox="-12 -12 24 24"><path d="M0-11C1.200-3.500 3.500-1.200 11 0 3.500 1.200 1.200 3.500 0 11-1.200 3.500-3.500 1.200-11 0-3.500-1.200-1.200-3.500 0-11Z" fill="#fff" stroke="#2de2ff" stroke-width="1.600" stroke-linejoin="round"/></svg>';
 
@@ -39,15 +40,23 @@ export class TitleScreen extends Screen {
     return [];
   }
 
+  get backButton() {
+    return false;
+  }
+
   onShow() {
     this.ui.showroom('title');
     this._renderPrompt(true);
   }
 
   _renderPrompt(force) {
-    const dev = this.game.input?.lastDevice === 'gamepad' ? 'gamepad' : 'keyboard';
+    const dev = this.ui.touchMode && this.game.input?.lastDevice !== 'gamepad' ? 'touch' : this.game.input?.lastDevice === 'gamepad' ? 'gamepad' : 'keyboard';
     if (!force && dev === this._device) return;
     this._device = dev;
+    if (dev === 'touch') {
+      this.prompt.innerHTML = 'Tap to start';
+      return;
+    }
     // browsers only allow audio after a keyboard/mouse gesture (gamepad buttons don't count)
     const needGesture = navigator.userActivation && !navigator.userActivation.hasBeenActive;
     this.prompt.innerHTML =
@@ -63,6 +72,12 @@ export class TitleScreen extends Screen {
   start() {
     if (!this.active) return;
     this.game.audio?.unlock?.();
+    if (PLATFORM.mobile) {
+      try {
+        const p = this.game.requestFullscreen?.(); // must run inside this tap (user gesture)
+        p?.catch?.(() => {});
+      } catch { /* unsupported */ }
+    }
     this.emit(EVT.UI_CONFIRM);
     this.ui.goto('main');
   }

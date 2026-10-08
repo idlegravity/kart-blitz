@@ -64,6 +64,10 @@ export class CupScreen extends Screen {
     );
   }
 
+  touchHint() {
+    return 'Tap the cup to start';
+  }
+
   hints() {
     return [{ action: 'confirm', label: 'Start' }, { action: 'back', label: 'Back' }];
   }

@@ -37,6 +37,14 @@ export class Screen {
   hints() {
     return [{ action: 'nav', label: 'Navigate' }, { action: 'confirm', label: 'Select' }, { action: 'back', label: 'Back' }];
   }
+  /** Override: one-line touch wording shown instead of key glyphs ("Tap a racer to choose"). */
+  touchHint() {
+    return '';
+  }
+  /** Phones show a floating Back button on screens with `backButton` (set false to opt out). */
+  get backButton() {
+    return true;
+  }
   /** Override: back action. */
   onBack() {}
 
@@ -56,7 +64,7 @@ export class Screen {
     this.root.classList.remove('is-leaving');
     if (!this.root.classList.contains('is-active')) this.root.classList.add('is-active');
     this.onShow(params, wasActive);
-    this.ui.hintBar.set(this.hints());
+    this.ui.hintBar.set(this.hints(), this.touchHint());
   }
 
   hide(immediate = false) {

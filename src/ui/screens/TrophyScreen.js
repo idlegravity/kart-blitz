@@ -19,6 +19,10 @@ const PARTICIPATION = { tier: 'participation', head: 'CUP COMPLETE!', sub: (cup,
 const CONFETTI = ['#ffd23f', '#ff3b3b', '#2de2ff', '#3ee86b', '#9b5cff', '#ff5fb0', '#ffffff'];
 
 export class TrophyScreen extends Screen {
+  get backButton() {
+    return false;
+  }
+
   constructor(ui) {
     super(ui, 'trophy');
     this.inputDelay = 0.6;

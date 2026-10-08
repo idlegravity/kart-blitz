@@ -6,6 +6,7 @@ import { Nav } from '../nav.js';
 import { h } from '../dom.js';
 import { uiIcon } from '../icons.js';
 import { head } from '../parts.js';
+import { PLATFORM } from '../../core/platform.js';
 
 const CLASSES = [
   { cc: 50, name: 'Relaxed', sub: 'Gentle speeds • easy rivals', accent: ['#7af79a', '#1fbf55'], angle: -62 },
@@ -49,6 +50,10 @@ export class CcScreen extends Screen {
     this.nav.setItems(buttons.map((el, i) => ({ el, onSelect: () => this.pick(CLASSES[i].cc) })), 2);
   }
 
+  touchHint() {
+    return 'Tap an engine class to continue';
+  }
+
   hints() {
     return [{ action: 'navV', label: 'Navigate' }, { action: 'confirm', label: 'Select' }, { action: 'back', label: 'Back' }];
   }
@@ -72,6 +77,6 @@ export class CcScreen extends Screen {
   }
 
   onBack() {
-    this.ui.goto('players');
+    this.ui.goto(PLATFORM.mobile ? 'main' : 'players');
   }
 }

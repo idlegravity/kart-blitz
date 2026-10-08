@@ -6,6 +6,7 @@ import { Screen } from './Screen.js';
 import { h } from '../dom.js';
 import { uiIcon } from '../icons.js';
 import { trackMapSvg } from '../trackart.js';
+import { PLATFORM } from '../../core/platform.js';
 
 const TIPS = [
   'Hold <b>Drift</b> through a turn, then release when the sparks glow for a <b>mini-turbo</b>: blue, orange, purple!',
@@ -23,7 +24,18 @@ const TIPS = [
   'Some edges on <b>Neon Skyway</b> have no rails. Mind the gap!',
 ];
 
+/** Phone wording: the on-screen buttons replace the key hints. */
+const TOUCH_TIPS = {
+  0: 'Hold the <b>Drift</b> button through a turn, then let go when the sparks glow for a <b>mini-turbo</b>: blue, orange, purple!',
+  1: 'Steer with small, smooth thumb moves: they keep you on the <b>racing line</b>. Big jerks just scrub speed.',
+  3: 'Hold the <b>Item</b> button to trail a <b>banana or orb</b> behind you as a shield, then release to throw it.',
+};
+
 export class LoadingScreen extends Screen {
+  get backButton() {
+    return false;
+  }
+
   constructor(ui) {
     super(ui, 'loading', { layer: 'loading' });
     this._tipT = 0;
@@ -77,7 +89,7 @@ export class LoadingScreen extends Screen {
     do i = Math.floor(Math.random() * TIPS.length);
     while (i === this._tipIdx && TIPS.length > 1);
     this._tipIdx = i;
-    this.tip.innerHTML = TIPS[i];
+    this.tip.innerHTML = (PLATFORM.mobile && TOUCH_TIPS[i]) || TIPS[i];
     if (!first) {
       this.tip.classList.remove('is-swap');
       void this.tip.offsetWidth; // eslint-disable-line no-unused-expressions

@@ -12,6 +12,8 @@ export const EVT = {
   GAME_STATE: 'game:state', //          { state, prev }  state: 'boot'|'menu'|'loading'|'race'
   GAME_PAUSE: 'game:pause', //          { paused }
   SETTINGS_CHANGED: 'game:settings', // { settings, key }
+  ORIENTATION: 'game:orientation', //   { orientation }  'landscape'|'portrait' (viewport shape; mobile rotate prompt)
+  CONTEXT_RESTORED: 'game:contextRestored', // { action }  WebGL context was lost and came back; action: 'menu'|'restart' (UI shows a toast)
 
   // ---- race flow (emitted by RaceManager / Game) ----
   RACE_SETUP: 'race:setup', //          { track, karts, player, players, views, config }  after karts spawned, before intro

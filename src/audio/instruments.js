@@ -7,6 +7,9 @@ import { adsr, perc, blip, noiseHit, fmTone, setWave, midiToFreq, satCurve, clam
 
 const EPS = 0.0001;
 
+/** Mobile CPU budget (set once by AudioManager): fewer unison oscillators per note. Desktop leaves this off. */
+export const VOICE_BUDGET = { lite: false };
+
 function osc(ctx, type, freq, t, { detune = 0, stop = 0 } = {}) {
   const o = ctx.createOscillator();
   setWave(ctx, o, type);
@@ -153,12 +156,12 @@ function padVoice(ctx, out, t, notes, dur, { vel = 1, cutoff = 1800, attack = 0.
   lp.frequency.linearRampToValueAtTime(cutoff, t + attack + 0.3);
   const g = ctx.createGain();
   const oscs = [];
-  const per = 0.5 / Math.sqrt(notes.length * 3);
+  const per = 0.5 / Math.sqrt(notes.length * (VOICE_BUDGET.lite ? 2 : 3));
   const sum = ctx.createGain();
   sum.gain.value = per;
   for (const m of notes) {
     const f = midiToFreq(m);
-    for (const d of [-detune, 0, detune]) oscs.push(osc(ctx, type, f, t, { detune: d }));
+    for (const d of VOICE_BUDGET.lite ? [-detune, detune] : [-detune, 0, detune]) oscs.push(osc(ctx, type, f, t, { detune: d }));
   }
   oscs.forEach((o) => o.connect(sum));
   sum.connect(lp).connect(g).connect(out);
@@ -183,7 +186,7 @@ function leadVoice(defaults) {
     lp.type = 'lowpass';
     lp.Q.value = p.q ?? 0.8;
     const voices = [osc(ctx, p.wave, f, t, { detune: 0 })];
-    if (p.thick) voices.push(osc(ctx, p.wave, f, t, { detune: p.thick }));
+    if (p.thick && !VOICE_BUDGET.lite) voices.push(osc(ctx, p.wave, f, t, { detune: p.thick }));
     if (p.sub) voices.push(osc(ctx, p.subWave ?? 'sine', f / 2, t));
     if (p.glide && p.from) {
       const f0 = midiToFreq(p.from);
@@ -245,7 +248,7 @@ function pluckVoice(defaults) {
       const t0 = t + i * (p.strum ?? 0);
       const f = midiToFreq(m);
       const a = osc(ctx, p.wave, f, t0, { detune: p.detune ?? 0 });
-      const b = p.thick ? osc(ctx, p.wave, f, t0, { detune: -p.thick }) : null;
+      const b = p.thick && !VOICE_BUDGET.lite ? osc(ctx, p.wave, f, t0, { detune: -p.thick }) : null;
       const lp = ctx.createBiquadFilter();
       lp.type = 'lowpass';
       lp.Q.value = p.q ?? 1;
@@ -325,13 +328,13 @@ function twangVoice(ctx, out, t, notes, dur, { vel = 1, decay = 0.5, bright = 7,
 /** Detuned supersaw lead. */
 function superSaw(ctx, out, t, notes, dur, { vel = 1, detune = 22, cutoff = 6500, attack = 0.008, release = 0.12, sustain = 0.9, gain = 0.5 } = {}) {
   const f = midiToFreq(notes[0]);
-  const spread = [-1, -0.5, 0, 0.5, 1];
+  const spread = VOICE_BUDGET.lite ? [-1, 0, 1] : [-1, -0.5, 0, 0.5, 1];
   const oscs = spread.map((s) => osc(ctx, 'sawtooth', f, t, { detune: s * detune }));
   const sub = osc(ctx, 'square', f / 2, t);
   const sg = ctx.createGain();
   sg.gain.value = 0.25;
   const mix = ctx.createGain();
-  mix.gain.value = 0.24;
+  mix.gain.value = VOICE_BUDGET.lite ? 0.36 : 0.24;
   oscs.forEach((o) => o.connect(mix));
   sub.connect(sg).connect(mix);
   const lp = ctx.createBiquadFilter();

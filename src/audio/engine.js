@@ -32,9 +32,13 @@ export class EngineVoice {
    * @param {AudioNode} dest
    * @param {{ player?: boolean }} o
    */
-  constructor(ctx, dest, { player = false } = {}) {
+  constructor(ctx, dest, { player = false, lite = false } = {}) {
     this.ctx = ctx;
     this.player = player;
+    /** mobile CPU budget: fewer oscillators / no intake hiss / no squeal wobble LFO on non-player voices */
+    this.lite = lite;
+    /** highest legal filter frequency (32 kHz mobile contexts have a 16 kHz Nyquist) */
+    this.nyq = ctx.sampleRate * 0.49;
     const t = ctx.currentTime;
     this.rpm = 0.2;
     this.active = false;
@@ -45,7 +49,7 @@ export class EngineVoice {
     this.pan = ctx.createStereoPanner ? ctx.createStereoPanner() : null;
     this.air = ctx.createBiquadFilter();
     this.air.type = 'lowpass';
-    this.air.frequency.value = 18000;
+    this.air.frequency.value = Math.min(18000, this.nyq);
     this.out.connect(this.air);
     if (this.pan) {
       this.air.connect(this.pan);
@@ -61,9 +65,10 @@ export class EngineVoice {
       o.connect(g);
       return { o, g };
     };
-    this.osc = [mk('sawtooth', 0.5), mk('sawtooth', 0.4), mk('square', 0.42)];
+    this.osc = lite && !player ? [mk('sawtooth', 0.62), mk('square', 0.45)] : [mk('sawtooth', 0.5), mk('sawtooth', 0.4), mk('square', 0.42)];
     if (player) this.osc.push(mk('triangle', 0.3));
-    this.osc[1].o.detune.value = 13;
+    if (this.osc.length > 2) this.osc[1].o.detune.value = 13;
+    this.oscSub = this.osc.length > 2 ? 2 : 1; // index of the sub-octave square
     this.core = ctx.createGain();
     this.core.gain.value = 0.36;
     for (const { g } of this.osc) g.connect(this.core);
@@ -85,14 +90,17 @@ export class EngineVoice {
     this.lfo.connect(this.lfoDepth).connect(this.am.gain);
 
     // ---- intake hiss
-    this.hiss = noiseSource(ctx, { loop: true });
-    this.hissF = ctx.createBiquadFilter();
-    this.hissF.type = 'bandpass';
-    this.hissF.frequency.value = 900;
-    this.hissF.Q.value = 0.8;
-    this.hissG = ctx.createGain();
-    this.hissG.gain.value = 0.02;
-    this.hiss.connect(this.hissF).connect(this.hissG).connect(this.out);
+    this.hasHiss = !(lite && !player);
+    if (this.hasHiss) {
+      this.hiss = noiseSource(ctx, { loop: true });
+      this.hissF = ctx.createBiquadFilter();
+      this.hissF.type = 'bandpass';
+      this.hissF.frequency.value = 900;
+      this.hissF.Q.value = 0.8;
+      this.hissG = ctx.createGain();
+      this.hissG.gain.value = 0.02;
+      this.hiss.connect(this.hissF).connect(this.hissG).connect(this.out);
+    }
 
     // ---- tyre squeal (drifting)
     this.skidN = noiseSource(ctx, { loop: true });
@@ -114,6 +122,7 @@ export class EngineVoice {
     this.skidLfoG = ctx.createGain();
     this.skidLfoG.gain.value = 40;
     this.skidLfo.connect(this.skidLfoG).connect(this.skidO.detune);
+    this._sources = null;
 
     if (player) {
       // ---- boost whine + whoosh
@@ -146,7 +155,7 @@ export class EngineVoice {
     this.skidO.start(t);
     this.skidLfo.start(t);
     const startLoop = (n) => n.start(t, Math.random() * 1.5);
-    startLoop(this.hiss);
+    if (this.hasHiss) startLoop(this.hiss);
     startLoop(this.skidN);
     if (player) {
       this.whine.start(t);
@@ -167,12 +176,22 @@ export class EngineVoice {
     const ctx = this.ctx;
     const now = ctx.currentTime;
     const tc = 0.035;
-    const rpm = s.rpm;
-    const pitch = s.pitch ?? 1;
+    // a single NaN/Infinity from game state must never reach an AudioParam (it throws, and used to abort the whole voice update)
+    const fin = (v, d) => (Number.isFinite(v) ? v : d);
+    const rpm = clamp(fin(s.rpm, 0.2), 0, 1.3);
+    const pitch = clamp(fin(s.pitch ?? 1, 1), 0.25, 4);
     const f0 = (44 + rpm * 134) * pitch;
+    s.throttle = clamp(fin(s.throttle, 0), 0, 1);
+    s.boost = clamp(fin(s.boost, 0), 0, 1.5);
+    s.skid = clamp(fin(s.skid, 0), 0, 1);
+    s.skidLevel = fin(s.skidLevel, 0);
+    s.offroad = clamp(fin(s.offroad, 0), 0, 1);
+    s.gain = clamp(fin(s.gain, 0), 0, 4);
+    s.pan = clamp(fin(s.pan, 0), -1, 1);
+    s.air = clamp(fin(s.air ?? 1, 1), 0.1, 1);
     this.osc[0].o.frequency.setTargetAtTime(f0, now, tc);
-    this.osc[1].o.frequency.setTargetAtTime(f0, now, tc);
-    this.osc[2].o.frequency.setTargetAtTime(f0 * 0.5, now, tc);
+    if (this.osc.length > 2) this.osc[1].o.frequency.setTargetAtTime(f0, now, tc);
+    this.osc[this.oscSub].o.frequency.setTargetAtTime(f0 * 0.5, now, tc);
     if (this.player) this.osc[3].o.frequency.setTargetAtTime(f0 * 2, now, tc);
     const thr = s.throttle;
     this.lp.frequency.setTargetAtTime((420 + rpm * 2300 + thr * 1000 + (s.boost || 0) * 700) * (s.air ?? 1), now, tc);
@@ -180,8 +199,10 @@ export class EngineVoice {
     this.lfoDepth.gain.setTargetAtTime(0.22 - rpm * 0.1, now, tc);
     const level = (this.player ? 0.4 : 0.22) * (0.42 + 0.58 * (0.35 + 0.65 * thr)) * (0.6 + 0.4 * rpm);
     this.core.gain.setTargetAtTime(level, now, 0.05);
-    this.hissF.frequency.setTargetAtTime(700 + rpm * 1800, now, tc);
-    this.hissG.gain.setTargetAtTime((0.015 + 0.05 * thr) * (this.player ? 1 : 0.5), now, 0.05);
+    if (this.hasHiss) {
+      this.hissF.frequency.setTargetAtTime(700 + rpm * 1800, now, tc);
+      this.hissG.gain.setTargetAtTime((0.015 + 0.05 * thr) * (this.player ? 1 : 0.5), now, 0.05);
+    }
 
     // tyre squeal
     const sk = s.skid;
@@ -203,7 +224,7 @@ export class EngineVoice {
 
     this.out.gain.setTargetAtTime(s.gain, now, 0.06);
     if (this.pan) this.pan.pan.setTargetAtTime(s.pan ?? 0, now, 0.05);
-    this.air.frequency.setTargetAtTime(s.airCut ?? 18000, now, 0.08);
+    this.air.frequency.setTargetAtTime(clamp(fin(s.airCut ?? 18000, 18000), 200, Math.min(20000, this.nyq)), now, 0.08);
     this._level = s.gain;
   }
 
@@ -221,7 +242,8 @@ export class EngineVoice {
       /* context closed */
     }
     const stopAt = now + fade + 0.05;
-    const srcs = [...this.osc.map((x) => x.o), this.lfo, this.hiss, this.skidN, this.skidO, this.skidLfo];
+    const srcs = [...this.osc.map((x) => x.o), this.lfo, this.skidN, this.skidO, this.skidLfo];
+    if (this.hasHiss) srcs.push(this.hiss);
     if (this.player) srcs.push(this.whine, this.whoosh, this.rumble);
     for (const s of srcs) {
       try {

@@ -126,6 +126,27 @@ export const TUNE = {
   /** Cheap protection: never let speed exceed this (m/s). */
   hardSpeedCap: 95,
 
+  // ---------------------------------------------------------------- mobile touch assist (kart.input.assist > 0 only)
+  /**
+   * Touch steering is coarser than a keyboard, so on phones (PlayerController sets input.assist from the touch
+   * controls; desktop never does) the kart gets two gentle helps: lane-keeping while the thumb is neutral and a
+   * lower |steer| needed to pick a drift direction. Both are tiny on purpose.
+   */
+  assist: {
+    /** Heading alignment toward the road tangent while NOT steering: rad/s per rad of error, capped. */
+    alignRate: 1.3,
+    alignMax: 0.4,
+    /** Errors above this (rad) are treated as deliberate (spin-outs, shortcuts) and fade out. */
+    alignMaxErr: 0.55,
+    /** Needs at least this much forward speed (m/s). */
+    alignMinSpeed: 9,
+    /** |steer| (stick) below which the alignment is fully on; fades to zero by `alignFade`. */
+    alignNeutral: 0.12,
+    alignFade: 0.3,
+    /** Drift-direction threshold multiplier (0.3 -> 0.19). */
+    driftThresholdMul: 0.62,
+  },
+
   // ---------------------------------------------------------------- hop, drift, mini-turbo
   drift: {
     hopVy: 4.5,

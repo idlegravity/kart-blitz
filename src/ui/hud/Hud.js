@@ -103,6 +103,15 @@ export class Hud {
 
     this.root.textContent = '';
     this.root.append(this.item.el, this.standings, this.lapEl, this.map.el, this.placeEl, this.banners.el);
+    if (this.ui.mobile) {
+      // on-screen pause (phones have no Esc): top centre, clear of both thumb zones
+      this.pauseBtn = h('div.hud-pause', { role: 'button', 'aria-label': 'Pause', html: uiIcon('pause') });
+      this.pauseBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (g.state === 'race' && g.race?.phase !== 'results' && !g.paused) g.pause();
+      });
+      this.root.append(this.pauseBtn);
+    }
     this.map.setup(track, karts);
 
     // ---- events

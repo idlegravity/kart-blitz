@@ -19,6 +19,10 @@ const STEP = 4.7; // em between rows (kept in sync with CSS)
 const CONFETTI_COLORS = ['#ffd23f', '#ff3b3b', '#2de2ff', '#3ee86b', '#9b5cff', '#ff5fb0', '#ffffff'];
 
 export class ResultsScreen extends Screen {
+  get backButton() {
+    return false;
+  }
+
   constructor(ui) {
     super(ui, 'results', { layer: 'overlay' });
     this.inputDelay = 0.8;
@@ -115,7 +119,7 @@ export class ResultsScreen extends Screen {
   // ------------------------------------------------------------------------------------------------
   _buildRows() {
     this.table.textContent = '';
-    this.table.style.height = `${this.results.length * STEP}em`;
+    this.table.style.height = `calc(${this.results.length} * var(--rstep, ${STEP}em))`; // --rstep: phones use shorter rows
     this.rows = this.results.map((r, i) => {
       const img = h('img', { alt: '', draggable: 'false' });
       img.src = this.ui.portrait(r.characterId, 128);

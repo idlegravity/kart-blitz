@@ -125,7 +125,7 @@ node scripts/snap.mjs "/?quick=1&track=neon&skipintro=1&autodrive=1" --wait=6000
 URL parameters for quick testing: `quick=1` (skip menus), `mode=quick|gp|timetrial`,
 `track=meadow|canyon|glacier|neon`, `char=blaze|bolt|mochi|rex|frost|nova|grizz|pepper`, `cc=50|100|150|200`,
 `laps=N`, `ai=0..7`, `autodrive=1` (the CPU drives your kart), `skipintro=1`, `nocountdown=1`,
-`players=1..4`, `pchars=a,b,..`, `pdev=kb1,kb2,pad0,..` (split-screen), `debug=1` (fps/draw calls/kart state), `mute=1`, `quality=low|medium|high`, `timescale=0.05..8`.
+`players=1..4`, `pchars=a,b,..`, `pdev=kb1,kb2,pad0,..` (split-screen), `debug=1` (fps/draw calls/kart state), `mute=1`, `quality=low|medium|high|mobile`, `timescale=0.05..8`, `mobile=1|0` (force / disable the phone experience).
 The live game instance is `window.__game`.
 
 ## Tech notes
@@ -141,3 +141,25 @@ The live game instance is `window.__game`.
   roughly 125 fps of headroom for 120 Hz displays.
 * Dynamic resolution: if frames stay slow on weaker GPUs, the renderer steps its pixel ratio down in 0.25
   increments, and climbs back up when there is headroom. Options → Quality (low/medium/high) sets the ceiling.
+
+## Mobile (phones & tablets)
+
+Kart Blitz runs on phones in landscape (single player: Grand Prix, Quick Race, Time Trial) with on-screen touch
+controls, a phone-sized HUD, a mobile quality preset with dynamic resolution (down to 0.75x) and a "rotate your
+phone" prompt in portrait. Add it to the home screen (iOS: Share → Add to Home Screen; Android: Install app) for a
+fullscreen, landscape experience. The mobile plan and team contract live in `docs/MOBILE.md`; architecture notes in
+`ARCHITECTURE.md` §14.
+
+```bash
+# emulate a phone (real Chrome: touch, DPR, mobile UA, landscape; appends mobile=1)
+node scripts/snap.mjs "/" --mobile --wait=3000 --out=snaps/mobile/title.png            # iphone 844x390@3 (default)
+node scripts/snap.mjs "/?quick=1&skipintro=1&mute=1" --mobile=se \
+  --actions="multitouch:110,280,2500|740,300,2500;shot:snaps/mobile/race.png"          # se | pixel | ipad too
+node scripts/snap.mjs "/?quick=1&autodrive=1&debug=1" --mobile --fps --actions="cpu:4;wait:8000"
+npm run smoke -- --only=mobile,perf:mobile                                             # phone scenarios
+node scripts/make-icons.mjs                                                            # regenerate PWA icons in public/
+```
+
+Touch actions: `tap:x,y`, `touch:x,y,ms`, `drag:x1,y1,x2,y2,ms`, `multitouch:x,y,ms|x,y,ms`, `rotate:portrait|landscape`,
+`cpu:4` (see the header of `scripts/snap.mjs`). On a real device, deploy (GitHub Pages) or `npm run dev` and open the
+LAN URL; on iOS audio is muted by the silent switch unless the page sets the playback audio session.

@@ -50,6 +50,8 @@ export const QUALITY = {
   low: { pixelRatio: 1.0, shadowMapSize: 1024, bloom: false, decorDensity: 0.4, particles: 0.5 },
   medium: { pixelRatio: 1.5, shadowMapSize: 2048, bloom: true, decorDensity: 0.7, particles: 0.8 },
   high: { pixelRatio: 2.0, shadowMapSize: 4096, bloom: true, decorDensity: 1.0, particles: 1.0 },
+  // phones/tablets (docs/MOBILE.md): default on PLATFORM.mobile. C tunes; `mobile: true` lets code branch cheaply.
+  mobile: { pixelRatio: 1.5, shadowMapSize: 1024, bloom: true, decorDensity: 0.4, particles: 0.5, mobile: true },
 };
 
 export const DEFAULT_SETTINGS = {
@@ -59,4 +61,9 @@ export const DEFAULT_SETTINGS = {
   musicVolume: 0.55,
   sfxVolume: 0.85,
   showFps: false,
+  // touch controls (mobile, see docs/MOBILE.md)
+  touchSteer: 'stick', // 'stick' (left-thumb drag) | 'tilt' (device orientation) | 'buttons' (left/right pads)
+  autoAccel: true, // throttle held automatically on touch; brake button still works
+  haptics: true, // navigator.vibrate on hits/boosts where supported
+  leftHanded: false, // mirror the touch layout (steer on the right, actions on the left)
 };

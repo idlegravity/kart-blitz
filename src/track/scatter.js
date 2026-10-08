@@ -9,6 +9,13 @@ import { smooth } from './noise.js';
 
 const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _e = new THREE.Euler(), _p = new THREE.Vector3(), _s = new THREE.Vector3(), _c = new THREE.Color();
 
+/** Mobile: the only instanced sets that keep casting into the (single, 1024) shadow map. */
+export const MOBILE_CASTERS = new Set(['trees', 'pines', 'saguaro', 'scrubtree', 'pillars', 'arch']);
+/** Mobile: fraction of instances kept per named set (applied on top of the density preset). */
+export const MOBILE_THIN = { 'crowd-bodies': 0.5, 'crowd-heads': 0.5, flowers: 0.5, bushes: 0.75, grass: 0.6, reeds: 0.6 };
+/** Mobile: bigger chunks for sets that are numerous but cheap (fewer draw calls). */
+export const MOBILE_CHUNK = { skyline: 2.4, 'neon-strips': 2.4 };
+
 /** A set of instances of one geometry/material, split into spatial chunks. */
 export class InstanceSet {
   /**
@@ -22,6 +29,17 @@ export class InstanceSet {
     this.geometry = geometry;
     this.material = material;
     this.opts = { chunk: 110, cull: Infinity, cast: false, receive: true, ...opts };
+    this._thin = 1;
+    this._acc = 0;
+    if (track.mobile) {
+      // phones: shorter draw distance (fog hides the pop), fewer shadow casters, optional thinning
+      const o = this.opts;
+      o.cull = Number.isFinite(o.cull) ? o.cull * 0.6 : 380;
+      if (o.cast && !MOBILE_CASTERS.has(o.name)) o.cast = false;
+      this._thin = MOBILE_THIN[o.name] ?? 1;
+      o.chunk *= MOBILE_CHUNK[o.name] ?? 1;
+      o.cull = Math.min(o.cull, track.mobileFar ?? Infinity);
+    }
     this.items = [];
     this.meshes = [];
     this.count = 0;
@@ -30,6 +48,12 @@ export class InstanceSet {
 
   /** Add an instance. rotations in radians. color: hex / Color / null. */
   add(x, y, z, ry = 0, sx = 1, sy = sx, sz = sx, color = null, rx = 0, rz = 0) {
+    if (this._thin < 1) {
+      // deterministic thinning (sets that must stay index-aligned, e.g. crowd bodies/heads, thin identically)
+      this._acc += this._thin;
+      if (this._acc < 1) return;
+      this._acc -= 1;
+    }
     this.items.push(x, y, z, ry, sx, sy, sz, rx, rz, color);
     this.count++;
   }

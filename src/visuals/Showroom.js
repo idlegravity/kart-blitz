@@ -48,6 +48,9 @@ const MENU_FRONT = ['blaze', 'bolt', 'mochi', 'pepper'];
 const MENU_BACK = ['rex', 'frost', 'nova', 'grizz'];
 
 const _c = new THREE.Color();
+/** 'mobile' behaves like 'low' in the showroom (no mirror floor, no spotlight shadow, cheap models). */
+const lowQ = (q) => q === 'low' || q === 'mobile';
+const baseQ = (q) => (q === 'mobile' ? 'low' : q);
 
 export class Showroom {
   constructor(game) {
@@ -66,14 +69,14 @@ export class Showroom {
     this.backdrop = createBackdrop();
     this.scene.add(this.backdrop.mesh);
     const pr = r.getPixelRatio();
-    this.floor = createFloor(this.quality, this.w, this.h, pr);
+    this.floor = createFloor(baseQ(this.quality), this.w, this.h, pr);
     this.scene.add(this.floor.mesh);
 
     // ---- lights ----
     this.key = new THREE.SpotLight(0xfff0dd, 340, 60, 0.75, 0.85, 2);
     this.key.position.set(-6, 10, 9);
     this.key.target.position.set(0, 1, 0);
-    this.key.castShadow = this.quality !== 'low';
+    this.key.castShadow = !lowQ(this.quality);
     this.key.shadow.mapSize.set(1024, 1024);
     this.key.shadow.bias = -0.0003;
     this.key.shadow.camera.near = 4;
@@ -104,7 +107,7 @@ export class Showroom {
     this.trackId = null;
 
     // ---- ambient particles (own instance: bokeh, motes, confetti, sparkles) ----
-    this.fx = new ParticleSystem({ additive: 2600, alpha: 1400, overlay: 200 });
+    this.fx = new ParticleSystem(this.quality === 'mobile' ? { additive: 1100, alpha: 700, overlay: 100 } : { additive: 2600, alpha: 1400, overlay: 200 });
     this.scene.add(this.fx.group);
     this.acc = { bokeh: 0, mote: 0, confetti: 0, trail: 0 };
 
@@ -382,9 +385,9 @@ export class Showroom {
     this.floor.reflector?.dispose?.();
     this.floor.mesh.geometry.dispose();
     this.floor.mesh.material.dispose?.();
-    this.floor = createFloor(q, this.w, this.h, this.game.renderer.getPixelRatio());
+    this.floor = createFloor(baseQ(q), this.w, this.h, this.game.renderer.getPixelRatio());
     this.scene.add(this.floor.mesh);
-    this.key.castShadow = q !== 'low';
+    this.key.castShadow = !lowQ(q);
     for (const e of this.entries.values()) {
       this.scene.remove(e.model.root);
       e.model.dispose();
@@ -425,7 +428,7 @@ export class Showroom {
     let e = this.entries.get(id);
     if (e) return e;
     const character = getCharacter(id);
-    const model = new KartModel(character, { isPlayer: false, quality: this.quality });
+    const model = new KartModel(character, { isPlayer: false, quality: baseQ(this.quality) });
     model.root.visible = false;
     model.root.scale.setScalar(0.0001);
     this.scene.add(model.root);
@@ -597,7 +600,7 @@ export class Showroom {
   }
 
   _ambient(dt) {
-    const q = this.quality === 'low' ? 0.5 : 1;
+    const q = lowQ(this.quality) ? 0.5 : 1;
     const th = this.theme;
     const pal = [th.glow, th.streak, th.tint];
     this.acc.bokeh += dt * 5 * q;

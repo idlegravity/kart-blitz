@@ -125,7 +125,7 @@ export class Kart {
 
     // ---- input (controllers write every frame) ----
     /** analog (optional): true when the steering comes from an analog stick, which gets a snappier smoothing. */
-    this.input = { throttle: 0, brake: 0, steer: 0, drift: false, item: false, lookBack: false, aimBack: false, analog: false };
+    this.input = { throttle: 0, brake: 0, steer: 0, drift: false, item: false, lookBack: false, aimBack: false, analog: false, assist: 0 };
 
     // ---- track tracking (physics maintains) ----
     this.trackIndex = -1;
@@ -361,7 +361,7 @@ export class Kart {
       else if (!this.grounded && this._trickWindow > 0 && !this._tricked) this._trick();
     }
     if (canDrift && !this.drifting && inp.drift && (this._hopActive || this._landGrace > 0)) {
-      if (Math.abs(inp.steer) > D.steerThreshold && this.speed > D.minSpeed) this._startDrift(Math.sign(inp.steer));
+      if (Math.abs(inp.steer) > D.steerThreshold * (inp.assist > 0 ? T.assist.driftThresholdMul : 1) && this.speed > D.minSpeed) this._startDrift(Math.sign(inp.steer));
     }
     if (this.drifting) this._updateDrift(h, canDrive);
 
@@ -519,9 +519,24 @@ export class Kart {
       // reversed when reversing; smooth through zero so there is no flip-flop near standstill
       const dir = clamp(this.speed / 1.5, -1, 1);
       rate = -this.steerAmount * turnRateAt(spdAbs, this.topSpeed, st.turnPeak, surf.steerMul) * dir * (this.grounded ? 1 : T.airSteer);
+      if (this.input.assist > 0) rate += this._assistRate();
     }
     this.yawRate = rate;
     if (rate !== 0) this.yaw = wrapAngle(this.yaw + rate * h);
+  }
+
+  /** Mobile touch assist: gentle yaw rate (rad/s, + = left) aligning the kart with the road while the player is not steering. */
+  _assistRate() {
+    const A = TUNE.assist;
+    const t = this.lastSample?.tangent;
+    if (!t || !this.grounded || this.speed < A.alignMinSpeed || this.respawnTime > 0 || this.hit) return 0;
+    if (this.surface === 'ice' || this.surface === 'void') return 0;
+    const steerW = 1 - smoothstep(A.alignNeutral, A.alignFade, Math.abs(this.steerAmount));
+    if (steerW <= 0) return 0;
+    const err = wrapAngle(Math.atan2(t.x, t.z) - this.yaw); // + = road is to the left of the heading
+    const ae = Math.abs(err);
+    const w = steerW * (1 - smoothstep(A.alignMaxErr * 0.7, A.alignMaxErr, ae));
+    return clamp(err * A.alignRate, -A.alignMax, A.alignMax) * w;
   }
 
   // ------------------------------------------------------------------------------------ ground frame
@@ -700,7 +715,7 @@ export class Kart {
     const wasHop = this._hopActive;
     this._hopActive = false;
     if (canDrive && !this.drifting && inp.drift) {
-      if (Math.abs(inp.steer) > D.steerThreshold && this.speed > D.minSpeed) this._startDrift(Math.sign(inp.steer));
+      if (Math.abs(inp.steer) > D.steerThreshold * (inp.assist > 0 ? TUNE.assist.driftThresholdMul : 1) && this.speed > D.minSpeed) this._startDrift(Math.sign(inp.steer));
       else if (wasHop) this._landGrace = D.graceAfterLand;
     }
   }

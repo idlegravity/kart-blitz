@@ -29,6 +29,7 @@ import { AIController } from './ai/AIController.js';
 import { UIManager } from './ui/UIManager.js';
 import { AudioManager } from './audio/AudioManager.js';
 import { RaceManager } from './race/RaceManager.js';
+import { PLATFORM } from './core/platform.js';
 
 const SETTINGS_KEY = 'kartblitz.settings.v1';
 const nextFrame = () => new Promise((r) => requestAnimationFrame(() => r()));
@@ -39,6 +40,10 @@ export class Game {
     this.events = events;
     this.params = new URLSearchParams(location.search);
     this.debug = this._parseDebug(this.params);
+    /** Platform flags { mobile, touch, ios, android, standalone } (src/core/platform.js, docs/MOBILE.md). */
+    this.platform = PLATFORM;
+    /** 'landscape' | 'portrait' — viewport shape. Always 'landscape' off-mobile. Changes emit EVT.ORIENTATION. */
+    this.orientation = 'landscape';
     this.settings = this._loadSettings();
     if (this.debug.quality) this.settings.quality = this.debug.quality;
 
@@ -71,7 +76,7 @@ export class Game {
     this.characters = CHARACTERS;
 
     // ---- renderer / scene / camera ----
-    const r = (this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance', stencil: false }));
+    const r = (this.renderer = new THREE.WebGLRenderer({ antialias: !PLATFORM.mobile, powerPreference: 'high-performance', stencil: false }));
     r.setPixelRatio(this._pixelRatio());
     r.setSize(window.innerWidth, window.innerHeight);
     r.outputColorSpace = THREE.SRGBColorSpace;
@@ -101,6 +106,7 @@ export class Game {
 
     // ---- wiring ----
     window.addEventListener('resize', () => this._onResize());
+    this._wirePlatform();
     const unlock = () => this.audio.unlock?.();
     window.addEventListener('pointerdown', unlock);
     window.addEventListener('keydown', unlock);
@@ -119,7 +125,10 @@ export class Game {
     this._debugEl = null;
     this._fps = { frames: 0, time: 0, value: 0 };
     /** Dynamic resolution: sliding window of real frame times while racing (see _adaptResolution). */
-    this._dyn = { t: 0, n: 0, slow: 0, cooldown: 0 };
+    this._dyn = { t: 0, n: 0, slow: 0, cooldown: 0, lockMs: 0, lockFor: 6000, dropAt: -1e9 };
+    /** Last pixel ratio chosen by dynamic resolution on mobile (kept across races so a slow phone doesn't re-learn every race). */
+    this._dynLast = null;
+    this._contextLost = false;
     this._last = performance.now();
     window.__game = this;
   }
@@ -158,6 +167,7 @@ export class Game {
     const rawMs = now - this._last;
     let dt = rawMs / 1000;
     this._last = now;
+    if (this._contextLost) return; // WebGL context is gone (iOS background kill) — wait for webglcontextrestored
     this._adaptResolution(rawMs);
     if (!(dt > 0)) dt = 0;
     dt = Math.min(dt, 1 / 20) * this.debug.timeScale;
@@ -229,8 +239,9 @@ export class Game {
       await nextFrame();
 
       this._teardownRace();
-      if (this.renderer.getPixelRatio() !== this._pixelRatio()) {
-        this.renderer.setPixelRatio(this._pixelRatio());
+      const wantPr = this._startPixelRatio();
+      if (this.renderer.getPixelRatio() !== wantPr) {
+        this.renderer.setPixelRatio(wantPr);
         this._onResize();
       }
       this._dyn.t = this._dyn.n = this._dyn.slow = 0;
@@ -344,6 +355,11 @@ export class Game {
       localStorage.setItem(SETTINGS_KEY, JSON.stringify(this.settings));
     } catch {}
     if (key === 'quality') {
+      this._dynLast = null;
+      this.settings._qualityPicked = true; // an explicit user choice: don't override it with the platform default
+      try {
+        localStorage.setItem(SETTINGS_KEY, JSON.stringify(this.settings));
+      } catch {}
       this.renderer.setPixelRatio(this._pixelRatio());
       this.postfx.setQuality?.(value);
       this._onResize();
@@ -375,7 +391,8 @@ export class Game {
     const cc = CC_CLASSES[cfg.cc] ? Number(cfg.cc) : this.settings.cc;
     // ---- players: 1..MAX_PLAYERS humans, distinct characters ----
     let reqPlayers = Array.isArray(cfg.players) && cfg.players.length ? cfg.players : [{ characterId: cfg.characterId, device: 'any' }];
-    reqPlayers = reqPlayers.slice(0, mode === 'timetrial' ? 1 : MAX_PLAYERS);
+    reqPlayers = reqPlayers.slice(0, mode === 'timetrial' || PLATFORM.mobile ? 1 : MAX_PLAYERS);
+    if (PLATFORM.mobile) reqPlayers = [{ characterId: reqPlayers[0]?.characterId ?? cfg.characterId, device: 'any' }]; // phones: single player, touch/any input
     const used = new Set();
     const players = reqPlayers.map((p, i) => {
       let ch = getCharacter(p?.characterId);
@@ -524,10 +541,23 @@ export class Game {
     return Math.min(window.devicePixelRatio || 1, q.pixelRatio);
   }
 
+  /** Pixel ratio for a new race: the preset cap, or (mobile) the last dynamic-resolution level if it dropped lower. */
+  _startPixelRatio() {
+    const cap = this._pixelRatio();
+    return PLATFORM.mobile && this._dynLast ? Math.min(cap, this._dynLast) : cap;
+  }
+
+  /** Internal render resolution relative to CSS pixels (renderer pixel ratio) — read-only, for debugging dynamic resolution. */
+  get renderScale() {
+    return this.renderer.getPixelRatio();
+  }
+
   /**
    * Dynamic resolution scaling. While racing, if most frames over a 2 s window miss ~50 fps, drop the render
-   * pixel ratio by 0.25 (never below 1); if frames are consistently fast (high-refresh display with headroom),
-   * climb back toward the quality preset's cap. Hitches (> 250 ms, tab switches) and pauses are ignored.
+   * pixel ratio by 0.25 (never below 1 on desktop; down to 0.75 in steps of 0.125 on mobile); if frames are
+   * consistently fast, climb back toward the quality preset's cap (mobile: only after a growing lockout following
+   * each drop, so a phone that can't hold 60 fps doesn't oscillate). Hitches (> 250 ms, tab switches) and pauses
+   * are ignored.
    */
   _adaptResolution(rawMs) {
     const d = this._dyn;
@@ -538,18 +568,32 @@ export class Game {
     }
     d.t += rawMs;
     d.n++;
-    if (rawMs > 20.5) d.slow++;
+    const mob = PLATFORM.mobile;
+    if (rawMs > (mob ? 21 : 20.5)) d.slow++;
+    if (d.lockMs > 0) d.lockMs -= rawMs;
     if (d.t < 2000) return;
     const slowFrac = d.slow / d.n;
     const avg = d.t / d.n;
     d.t = d.n = d.slow = 0;
     const cap = this._pixelRatio();
     const cur = this.renderer.getPixelRatio();
+    const floor = mob ? 0.75 : 1;
+    const step = mob ? 0.125 : 0.25;
     let next = cur;
-    if (slowFrac > 0.6 && cur > 1) next = Math.max(1, cur - 0.25);
-    else if (avg < 12.5 && cur < cap) next = Math.min(cap, cur + 0.25);
+    if (slowFrac > (mob ? 0.4 : 0.6) && cur > floor) {
+      next = Math.max(floor, cur - step);
+      if (mob) {
+        // dropped again soon after climbing → back off the climbing for longer
+        d.lockFor = performance.now() - d.dropAt < 20000 ? Math.min(60000, d.lockFor * 2) : 6000;
+        d.lockMs = d.lockFor;
+        d.dropAt = performance.now();
+      }
+    } else if (cur < cap && (mob ? slowFrac < 0.02 && avg < 18 && d.lockMs <= 0 : avg < 12.5)) {
+      next = Math.min(cap, cur + step);
+    }
     if (next !== cur) {
       this.renderer.setPixelRatio(next);
+      if (mob) this._dynLast = next;
       this._onResize();
       d.cooldown = 1500; // let the new resolution settle before measuring again
       console.info(`[Game] dynamic resolution: pixel ratio ${cur} → ${next} (avg ${avg.toFixed(1)} ms, ${(slowFrac * 100) | 0}% slow frames)`);
@@ -564,6 +608,86 @@ export class Game {
     if (this.views.length) this._updateViewAspects();
     this.postfx.setSize?.(w, h);
     this.showroom.resize?.(w, h);
+    this._updateOrientation();
+  }
+
+  // =====================================================================================
+  // platform (mobile) plumbing — see docs/MOBILE.md §3.1
+  // =====================================================================================
+  _wirePlatform() {
+    const canvas = this.renderer.domElement;
+    // visibility: backgrounding the tab/app pauses a running race (in addition to window blur)
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden && this.state === 'race' && this.race.isRacing && !this.debug.nopause) this.pause();
+      if (!document.hidden) this._last = performance.now();
+    });
+    // WebGL context loss (iOS kills contexts of backgrounded pages)
+    canvas.addEventListener('webglcontextlost', (e) => {
+      e.preventDefault();
+      this._contextLost = true;
+      console.warn('[Game] WebGL context lost');
+      if (this.state === 'race' && !this.paused) this.pause();
+    });
+    canvas.addEventListener('webglcontextrestored', () => this._onContextRestored());
+    if (!PLATFORM.mobile) return;
+    // viewport: iOS toolbar show/hide, rotation (iOS reports stale sizes right after orientationchange → re-measure)
+    const resize = () => this._onResize();
+    window.visualViewport?.addEventListener('resize', resize);
+    window.addEventListener('orientationchange', () => {
+      resize();
+      setTimeout(resize, 120);
+      setTimeout(resize, 400);
+    });
+    screen.orientation?.addEventListener?.('change', resize);
+    // no pinch / double-tap zoom, no context menu on long-press
+    for (const t of ['gesturestart', 'gesturechange', 'gestureend']) document.addEventListener(t, (e) => e.preventDefault());
+    document.addEventListener('contextmenu', (e) => e.preventDefault());
+    document.addEventListener('dblclick', (e) => e.preventDefault());
+    document.addEventListener('touchmove', (e) => { if (e.touches.length > 1) e.preventDefault(); }, { passive: false });
+    this._updateOrientation();
+  }
+
+  /** Recompute `game.orientation`; on change emit EVT.ORIENTATION and (mobile) auto-pause a running race in portrait. */
+  _updateOrientation() {
+    const o = PLATFORM.mobile && window.innerHeight > window.innerWidth ? 'portrait' : 'landscape';
+    if (o === this.orientation) return;
+    this.orientation = o;
+    if (o === 'portrait' && this.state === 'race' && this.race.phase !== 'results' && !this.paused && !this.debug.nopause) this.pause();
+    events.emit(EVT.ORIENTATION, { orientation: o });
+  }
+
+  /**
+   * Enter fullscreen + lock landscape where supported (Android Chrome, iPadOS). Call from a user gesture (first tap on
+   * the title). Safe no-op on desktop, in an installed PWA, and on iPhone Safari (which has neither API).
+   * @returns {Promise<boolean>} whether fullscreen is active afterwards
+   */
+  async requestFullscreen() {
+    if (!PLATFORM.mobile || PLATFORM.standalone) return false;
+    const el = document.documentElement;
+    const req = el.requestFullscreen || el.webkitRequestFullscreen;
+    if (req && !(document.fullscreenElement || document.webkitFullscreenElement)) {
+      try {
+        await req.call(el, { navigationUI: 'hide' });
+      } catch {}
+    }
+    try {
+      await screen.orientation?.lock?.('landscape');
+    } catch {}
+    return !!(document.fullscreenElement || document.webkitFullscreenElement);
+  }
+
+  /** WebGL context came back. three.js re-initialises its GL state lazily; we restart the race (fresh GPU resources) or just resume the menu. */
+  _onContextRestored() {
+    console.warn('[Game] WebGL context restored');
+    this._contextLost = false;
+    this._last = performance.now();
+    this._onResize();
+    const action = this.state === 'race' || this.state === 'loading' ? 'restart' : 'menu';
+    if (action === 'restart' && !this._loadingRace && this.raceConfig) {
+      this._clearPause();
+      this.restartRace();
+    }
+    events.emit(EVT.CONTEXT_RESTORED, { action });
   }
 
   _loadSettings() {
@@ -573,6 +697,12 @@ export class Game {
     } catch {}
     const s = { ...DEFAULT_SETTINGS, ...saved };
     if (!QUALITY[s.quality]) s.quality = DEFAULT_SETTINGS.quality;
+    // Platform default quality unless the user picked one explicitly on this device: phones start on 'mobile',
+    // and a stray 'mobile' (saved while testing with ?mobile=1) never sticks on desktop.
+    if (!saved._qualityPicked || (!PLATFORM.mobile && s.quality === 'mobile')) {
+      if (PLATFORM.mobile) s.quality = 'mobile';
+      else if (s.quality === 'mobile') s.quality = DEFAULT_SETTINGS.quality;
+    }
     return s;
   }
 
@@ -587,14 +717,14 @@ export class Game {
       cc: num('cc', undefined),
       laps: num('laps', undefined),
       ai: num('ai', undefined),
-      players: this._parsePlayersParam(p),
+      players: PLATFORM.mobile ? undefined : this._parsePlayersParam(p), // phones are single player
       autodrive: flag('autodrive'),
       skipIntro: flag('skipintro'),
       noCountdown: flag('nocountdown'),
       debug: flag('debug'),
       mute: flag('mute'),
       nopause: flag('nopause'),
-      quality: ['low', 'medium', 'high'].includes(p.get('quality')) ? p.get('quality') : undefined,
+      quality: ['low', 'medium', 'high', 'mobile'].includes(p.get('quality')) ? p.get('quality') : undefined,
       timeScale: Math.max(0.05, Math.min(8, num('timescale', 1))),
     };
   }

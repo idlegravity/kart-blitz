@@ -230,8 +230,10 @@ export function compileSong(def) {
 // ==================================================================================================
 // runtime
 // ==================================================================================================
-const LOOKAHEAD = 0.55; // seconds scheduled ahead
+const LOOKAHEAD = 0.55; // seconds scheduled ahead (desktop)
 const TICK_MS = 35;
+/** A scheduler that fell more than this far behind the audio clock (main-thread stall / throttled timer) skips ahead instead of dumping a burst of late notes. */
+const MAX_LATE = 0.3;
 
 /** Plays one compiled song into `dest`. */
 class MusicPlayer {
@@ -309,8 +311,22 @@ class MusicPlayer {
       const stepDur = 60 / bpm / 4;
       const swing = c.def.swing ?? 0;
       const t = this.nextTime + (this.step % 2 === 1 ? swing * stepDur : 0);
+      // stalled (timer throttled / long frame): drop the missed steps, keep the song position, and carry on on the beat grid
+      if (!eng.offline && this.nextTime < eng.ctx.currentTime - MAX_LATE) {
+        this.nextTime = eng.ctx.currentTime + 0.04;
+        this.skipped = (this.skipped ?? 0) + 1;
+        continue;
+      }
       const evs = part.events[this.bar][this.step];
-      for (let i = 0; i < evs.length; i++) this._play(evs[i], t, stepDur);
+      // one bad voice must never stall the sequencer (an exception here used to freeze the song forever)
+      for (let i = 0; i < evs.length; i++) {
+        try {
+          this._play(evs[i], t, stepDur);
+        } catch (e) {
+          this.errors = (this.errors ?? 0) + 1;
+          if (this.errors <= 3) console.warn('[music] voice failed', evs[i]?.layer, e);
+        }
+      }
       this.nextTime += stepDur;
       this.playedSteps++;
       if (++this.step >= STEPS) {
@@ -328,6 +344,7 @@ class MusicPlayer {
     const layer = this.layers.get(ev.layer);
     if (!layer) return;
     if (ev.drum) {
+      if (this.engine.thinDrums?.has(ev.drum)) return;
       const v = ev.vel * (0.94 + Math.random() * 0.12);
       DRUMS[ev.drum](this.ctx, layer.input, t, { vel: v });
       if (ev.drum === 'kick') this._duck(t);
@@ -384,8 +401,12 @@ export class MusicEngine {
    * @param {BaseAudioContext} ctx
    * @param {{ dest: AudioNode, reverb?: AudioNode, songs: Record<string, object> }} o
    */
-  constructor(ctx, { dest, reverb = null, songs }) {
+  constructor(ctx, { dest, reverb = null, songs, lookahead = LOOKAHEAD, tickMs = TICK_MS, thinDrums = null }) {
     this.ctx = ctx;
+    this.lookahead = lookahead;
+    this.tickMs = tickMs;
+    /** drum names skipped entirely (mobile CPU budget) */
+    this.thinDrums = thinDrums;
     this.dest = dest;
     this.reverb = reverb;
     this.songs = songs;
@@ -413,7 +434,7 @@ export class MusicEngine {
 
   start() {
     if (this._timer || this.offline) return;
-    this._timer = setInterval(() => this.tick(), TICK_MS);
+    this._timer = setInterval(() => this.tick(), this.tickMs);
   }
 
   stopTimer() {
@@ -448,8 +469,13 @@ export class MusicEngine {
     this.players.push(p);
     this.current = p;
     this.currentKey = key;
-    p.schedule(now + LOOKAHEAD);
     this.start();
+    try {
+      p.schedule(now + this.lookahead);
+    } catch (e) {
+      console.warn('[music] initial schedule failed', e);
+    }
+    p.startedAt = now;
     return p;
   }
 
@@ -462,14 +488,31 @@ export class MusicEngine {
   }
 
   setTempoScale(s) {
-    this.tempoScale = s;
+    if (Number.isFinite(s) && s > 0.2 && s < 4) this.tempoScale = s;
+  }
+
+  /** Driven from the game frame as well as the interval timer, so a throttled/killed timer can't starve the sequencer. */
+  pump() {
+    if (this.offline || !this.players.length) return;
+    if (!this._timer) this.start();
+    if (performance.now() - (this.lastTick ?? 0) > this.tickMs * 0.8) this.tick();
+  }
+
+  /** Seconds since the current song started (audio time), or 0. */
+  get currentAge() {
+    return this.current?.startedAt !== undefined ? this.ctx.currentTime - this.current.startedAt : 0;
   }
 
   tick() {
     const now = this.ctx.currentTime;
+    this.lastTick = performance.now();
     for (let i = this.players.length - 1; i >= 0; i--) {
       const p = this.players[i];
-      p.schedule(now + LOOKAHEAD);
+      try {
+        p.schedule(now + this.lookahead);
+      } catch (e) {
+        console.warn('[music] schedule failed', e);
+      }
       if (p.killAt && now > p.killAt) {
         p.dispose();
         this.players.splice(i, 1);

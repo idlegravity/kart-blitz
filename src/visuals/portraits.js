@@ -153,7 +153,7 @@ function render(renderer, character, size) {
   ensureTargets(rig, S);
 
   // ---- build the bust ----
-  const model = new KartModel(character, { quality: 'high' });
+  const model = new KartModel(character, { quality: globalThis.__game?.settings?.quality === 'mobile' ? 'low' : 'high' });
   model.setBustOnly(true);
   rig.scene.add(model.root);
   model.update(0, null);
@@ -192,6 +192,8 @@ function render(renderer, character, size) {
   renderer.autoClear = true;
 
   // ---- render HDR bust → finish pass (un-premultiply + ACES + sRGB) → read back ----
+  // setViewport() is in CSS px (multiplied by the renderer pixel ratio): pass S / pr so the S x S targets are always fully covered
+  const pr = renderer.getPixelRatio();
   renderer.setRenderTarget(rig.rtHDR);
   renderer.setViewport(0, 0, S, S);
   renderer.setClearColor(0x000000, 0);

@@ -17,8 +17,11 @@ import '@fontsource/nunito/700.css';
 import '@fontsource/nunito/800.css';
 import '@fontsource/nunito/900.css';
 import './styles.css';
+import './mobile.css';
 
 import { EVT } from '../core/events.js';
+import { PLATFORM } from '../core/platform.js';
+import { MobileChrome } from './MobileChrome.js';
 import { CHARACTERS } from '../data/characters.js';
 import { getPortrait } from '../visuals/portraits.js';
 import { h } from './dom.js';
@@ -69,11 +72,14 @@ class HintBar {
     this.wrap = h('div.hints');
     this.el.appendChild(this.wrap);
     this.list = [];
+    this.touchText = '';
     this.device = 'keyboard';
   }
 
-  set(list) {
+  /** `touchText`: the one-line wording shown instead of key glyphs on touch ("Tap a racer to choose"). */
+  set(list, touchText = '') {
     this.list = list || [];
+    this.touchText = touchText || '';
     this.render();
   }
 
@@ -84,6 +90,11 @@ class HintBar {
   }
 
   render() {
+    if (this.device === 'touch') {
+      this.wrap.innerHTML = this.touchText ? `<div class="hint hint--touch"><span>${this.touchText}</span></div>` : '';
+      this.el.classList.toggle('is-on', !!this.touchText);
+      return;
+    }
     this.wrap.innerHTML = this.list
       .map(({ action, label }) => `<div class="hint"><span class="hint__g">${actionGlyph(action, this.device)}</span><span>${label}</span></div>`)
       .join('');
@@ -115,6 +126,19 @@ export class UIManager {
     this.root = document.getElementById('ui') ?? document.body.appendChild(h('div#ui'));
     this.root.textContent = '';
     this.root.insertAdjacentHTML('afterbegin', DEFS_SVG);
+    /** Phone/tablet UI (docs/MOBILE.md): responsive scale, tap menus, Back button, pause button, rotate prompt. */
+    this.mobile = PLATFORM.mobile;
+    /** True while the last input was a finger (hints say "Tap", glyphs hidden). Keys / mouse / pad flip it back. */
+    this.touchMode = this.mobile;
+    if (PLATFORM.touch) {
+      window.addEventListener('pointerdown', (e) => {
+        this.touchMode = e.pointerType !== 'mouse';
+      }, true);
+      window.addEventListener('keydown', () => {
+        this.touchMode = false;
+      }, true);
+    }
+    this.root.classList.toggle('is-mobile', this.mobile);
 
     /** DOM layers, back to front. */
     this.layers = {};
@@ -157,7 +181,9 @@ export class UIManager {
       slots: null,
     };
 
+    if (this.mobile) this.flow.players = 1; // single player only on phones: the Players step is skipped
     this.hud = new Hud(this);
+    this.chrome = this.mobile ? new MobileChrome(this) : null;
 
     const ev = game.events;
     const on = (name, fn) => this._offs.push(ev.on(name, fn));
@@ -208,6 +234,7 @@ export class UIManager {
     this._time += dt;
     // each step is isolated: an exception here must not abort Game's frame (rendering follows ui.update)
     this._step(this._processPending);
+    this._step(() => this.chrome?.update(dt));
     this._step(this._pollDevice);
     this._step(this._pollInput);
     this._step(this._warmPortraits);
@@ -310,7 +337,7 @@ export class UIManager {
     let url = this._portraits.get(key);
     if (!url) {
       try {
-        url = getPortrait(this.game, id, size);
+        url = this._atUnitPixelRatio(() => getPortrait(this.game, id, size));
       } catch (e) {
         console.warn('[ui] getPortrait failed', e);
       }
@@ -318,6 +345,29 @@ export class UIManager {
       this._portraits.set(key, url);
     }
     return url;
+  }
+
+  /**
+   * Workaround (visuals/portraits.js, not ours): it calls renderer.setViewport(0, 0, S, S) for an S x S render target, but
+   * three multiplies that by the renderer's pixel ratio, so on every DPR > 1 screen (all phones) the bust renders zoomed in.
+   * While a portrait renders we undo the scale for the numeric form of setViewport (the Vector4 restore form is left alone).
+   */
+  _atUnitPixelRatio(fn) {
+    const r = this.game.renderer;
+    const pr = r?.getPixelRatio?.() ?? 1;
+    if (!r || pr === 1 || r.__portraitPatched) return fn();
+    const orig = r.setViewport;
+    r.__portraitPatched = true;
+    r.setViewport = function (x, y, w, hh) {
+      if (typeof x === 'object') return orig.call(this, x);
+      return orig.call(this, x / pr, y / pr, w / pr, hh / pr);
+    };
+    try {
+      return fn();
+    } finally {
+      r.setViewport = orig;
+      r.__portraitPatched = false;
+    }
   }
 
   _warmPortraits() {
@@ -506,8 +556,9 @@ export class UIManager {
 
   _pollDevice() {
     let dev = this.game.input?.lastDevice === 'gamepad' ? 'gamepad' : 'keyboard';
+    if (dev === 'keyboard' && this.touchMode && PLATFORM.touch) dev = 'touch';
     const src = this._menuSource();
-    if (src && src.id && src.id !== 'any') dev = src.id.startsWith('pad') ? 'gamepad' : src.id; // 'kb1' | 'kb2' | 'gamepad'
+    if (dev !== 'touch' && src && src.id && src.id !== 'any') dev = src.id.startsWith('pad') ? 'gamepad' : src.id; // 'kb1' | 'kb2' | 'gamepad'
     if (dev !== this._device) {
       this._device = dev;
       this.hintBar.setDevice(dev);

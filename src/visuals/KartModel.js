@@ -7,10 +7,12 @@
  *   getAnchor(name, out)     — 'wheelFL','wheelFR','wheelRL','wheelRR','exhaustL','exhaustR','head','back'
  *                              (+ 'front','top','center','hook'); wheels report the tyre contact point
  *   dispose()
+ * Mobile LOD: setLod(true) swaps the animated parts for ONE pre-merged rest-pose mesh without shadow casting (distant CPU karts).
  * Draw calls: chassis + 4 wheels + steering wheel + torso + head + blob shadow = 9 (dizzy stars / drone only while shown).
  * OWNER: Visuals.
  */
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { events } from '../core/EventBus.js';
 import { EVT } from '../core/events.js';
 import { clamp, wrapAngle } from '../core/math.js';
@@ -31,10 +33,11 @@ const PART_CACHE = new Map();
 
 /** Geometry for a character is built once per quality tier and shared by every instance. */
 function getParts(character, quality) {
-  const key = `${character.id}:${quality === 'low' ? 'l' : 'h'}`;
+  const low = quality === 'low' || quality === 'mobile';
+  const key = `${character.id}:${low ? 'l' : 'h'}`;
   let p = PART_CACHE.get(key);
   if (p) return p;
-  setDetail(quality === 'low' ? 0.7 : 1);
+  setDetail(low ? 0.7 : 1);
   const cn = KART_CLASSES[character.weightClass] ? character.weightClass : 'medium';
   const cls = KART_CLASSES[cn];
   const palette = makePalette(character);
@@ -120,6 +123,7 @@ export class KartModel {
       const spin = new THREE.Group();
       const mesh = mk(axle === 'front' ? P.wheelF.geo : P.wheelR.geo);
       if (sx < 0) mesh.rotation.y = Math.PI;
+      if (quality === 'mobile') mesh.castShadow = false; // phones: wheels never cast (saves 4 shadow draws per kart)
       spin.add(mesh);
       pivot.add(spin);
       this.wheelsRoot.add(pivot);
@@ -187,6 +191,11 @@ export class KartModel {
     this.blob.renderOrder = -1;
     this.blob.frustumCulled = false;
     this.root.add(this.blob);
+
+    // distant-kart LOD (mobile): one merged rest-pose mesh, built once per character and shared
+    this.farMesh = null;
+    this._far = false;
+    if (quality === 'mobile') this._buildFar(P);
 
     // ---------------- animation state ----------------
     this.kart = null;
@@ -312,6 +321,71 @@ export class KartModel {
     S.bob.kick(0.6 * k);
     S.dPitch.kick(-1.4 * k);
     S.headPitch -= 0.1 * k;
+  }
+
+  /**
+   * Distant-kart LOD: far = true hides the animated parts and shows a single merged rest-pose mesh that casts no
+   * shadow (the blob stays). Only meaningful with quality 'mobile'; a no-op otherwise.
+   */
+  setLod(far) {
+    far = !!far;
+    if (!this.farMesh || far === this._far) return;
+    this._far = far;
+    this.farMesh.visible = far;
+    this.chassisMesh.visible = !far;
+    this.steerPivot.visible = !far;
+    this.driver.visible = !far;
+    this.wheelsRoot.visible = !far;
+  }
+
+  get isFar() {
+    return this._far;
+  }
+
+  _buildFar(P) {
+    if (P.far === undefined) {
+      P.far = null;
+      this.root.updateMatrixWorld(true);
+      const inv = new THREE.Matrix4().copy(this.hull.matrixWorld).invert();
+      const list = [];
+      const m = new THREE.Matrix4();
+      const collect = (o) => {
+        if (o.isMesh && o.material === this.material) {
+          m.multiplyMatrices(inv, o.matrixWorld);
+          const g = o.geometry.clone();
+          g.applyMatrix4(m);
+          const pv = g.attributes.aPivot, fl = g.attributes.aFlex;
+          const e = m.elements;
+          const plain = Math.abs(e[0] - 1) + Math.abs(e[5] - 1) + Math.abs(e[10] - 1) + Math.abs(e[1]) + Math.abs(e[2]) + Math.abs(e[4]) + Math.abs(e[6]) + Math.abs(e[8]) + Math.abs(e[9]) < 1e-4;
+          if (pv) {
+            for (let i = 0; i < pv.count; i++) {
+              _v1.fromBufferAttribute(pv, i).applyMatrix4(m);
+              pv.setXYZ(i, _v1.x, _v1.y, _v1.z);
+            }
+          }
+          if (fl && !plain) for (let i = 0; i < fl.count; i++) fl.setY(i, -1); // rotated parts (wheels, steering): no flex
+          list.push(g);
+        }
+        for (const c of o.children) collect(c);
+      };
+      collect(this.hull);
+      collect(this.wheelsRoot);
+      let merged = null;
+      try {
+        merged = mergeGeometries(list, false);
+      } catch (e) {
+        merged = null;
+      }
+      if (merged) merged.computeBoundingSphere();
+      P.far = merged;
+      for (const g of list) g.dispose();
+    }
+    if (!P.far) return;
+    this.farMesh = new THREE.Mesh(P.far, this.material);
+    this.farMesh.castShadow = false;
+    this.farMesh.receiveShadow = false;
+    this.farMesh.visible = false;
+    this.hull.add(this.farMesh);
   }
 
   /** Show/hide the contact blob shadow. */
