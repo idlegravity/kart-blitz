@@ -89,7 +89,9 @@ export class ItemSlot {
   _land(id) {
     this.rolling = false;
     this.el.classList.remove('is-rolling');
-    this.shown = null; // force refresh
+    // force refresh: hide the last roulette icon first, or it stays lit under the landed one
+    this.icons.get(this.shown)?.classList.remove('is-on');
+    this.shown = null;
     this._setIcon(id, true);
     pop(this.bubble, { from: 1.3, duration: 520 });
     this.el.classList.remove('is-land');
