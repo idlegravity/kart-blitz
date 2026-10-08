@@ -5,13 +5,16 @@
  * module AND mention it in your final report so it can be promoted here.
  */
 export const EVT = {
+  // ---- split-screen (see docs/SPLITSCREEN.md) ----
+  VIEWS_CHANGED: 'views:changed', //    { views, layout, overviewRect }  after views are built; again with views: [] on teardown
+
   // ---- game / app ----
   GAME_STATE: 'game:state', //          { state, prev }  state: 'boot'|'menu'|'loading'|'race'
   GAME_PAUSE: 'game:pause', //          { paused }
   SETTINGS_CHANGED: 'game:settings', // { settings, key }
 
   // ---- race flow (emitted by RaceManager / Game) ----
-  RACE_SETUP: 'race:setup', //          { track, karts, player, config }  after karts spawned, before intro
+  RACE_SETUP: 'race:setup', //          { track, karts, player, players, views, config }  after karts spawned, before intro
   RACE_TEARDOWN: 'race:teardown', //    {}                                 before the race scene is destroyed
   RACE_PHASE: 'race:phase', //          { phase, prev }  'intro'|'countdown'|'racing'|'finished'|'results'
   RACE_COUNTDOWN: 'race:countdown', //  { count }  3, 2, 1, then 0 = GO

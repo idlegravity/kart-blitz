@@ -11,6 +11,7 @@ import { uiIcon, checkerSvg } from '../icons.js';
 import { ItemSlot } from './ItemSlot.js';
 import { Minimap } from './Minimap.js';
 import { Banners } from './Banners.js';
+import { SplitHud } from './SplitHud.js';
 import { RaceManager } from '../../race/RaceManager.js';
 
 export class Hud {
@@ -27,6 +28,8 @@ export class Hud {
     this._place = -1;
     this._lap = -1;
     this._bestLap = Infinity;
+    /** Split-screen HUD (several humans) or null for the classic single-player HUD. */
+    this.split = null;
   }
 
   // ==================================================================================================
@@ -35,6 +38,20 @@ export class Hud {
     this.ctx = ctx;
     const g = this.game;
     const { karts, track } = ctx;
+
+    // ---- split-screen: one HUD per view + shared minimap / overview (see SplitHud.js)
+    const views = ctx.views?.length ? ctx.views : g.views;
+    if (views && views.length > 1) {
+      this.root.classList.remove('is-solo');
+      this.root.classList.add('is-split', 'is-hidden');
+      this.root.dataset.layout = g.layout ?? (views.length === 2 ? 'h2' : 'quad');
+      this.visible = false;
+      this.split = new SplitHud(this);
+      this.split.setup(ctx, views, g.layout, g.overviewRect);
+      return;
+    }
+    this.root.classList.remove('is-split');
+    delete this.root.dataset.layout;
     this._place = -1;
     this._lap = -1;
     this._bestLap = Infinity;
@@ -147,6 +164,8 @@ export class Hud {
   teardown() {
     for (const off of this.offs) off();
     this.offs = [];
+    this.split?.teardown();
+    this.split = null;
     this.banners?.clear();
     this.root.textContent = '';
     this.root.classList.add('is-hidden');
@@ -202,6 +221,10 @@ export class Hud {
   // ==================================================================================================
   update(dt) {
     if (!this.ctx) return;
+    if (this.split) {
+      this.split.update(dt);
+      return;
+    }
     const g = this.game, p = g.player, r = g.race;
     if (!p) return;
 

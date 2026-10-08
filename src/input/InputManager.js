@@ -19,6 +19,7 @@
  */
 import { EVT } from '../core/events.js';
 import { clamp } from '../core/math.js';
+import { InputSource, ACTIONS, readOnePad, resetPadOut } from './InputSource.js';
 
 /** Keyboard bindings by KeyboardEvent.code. */
 export const KEY_BINDINGS = {
@@ -36,13 +37,42 @@ export const KEY_BINDINGS = {
   down: ['ArrowDown', 'KeyS'],
 };
 
-/** Standard-mapping gamepad buttons per action. */
-const PAD = { A: 0, B: 1, X: 2, Y: 3, LB: 4, RB: 5, LT: 6, RT: 7, BACK: 8, START: 9, L3: 10, R3: 11, UP: 12, DOWN: 13, LEFT: 14, RIGHT: 15 };
-
-const ACTIONS = ['throttle', 'brake', 'left', 'right', 'drift', 'item', 'lookBack', 'pause', 'confirm', 'back', 'up', 'down'];
+/**
+ * Split-screen keyboard halves (docs/SPLITSCREEN.md §3.2). Same action names as KEY_BINDINGS.
+ * Menus: kb1 WASD + Space/E confirm + Q back; kb2 arrows + Enter or Slash confirm + Backspace back.
+ */
+export const KEY_BINDINGS_SPLIT = {
+  kb1: {
+    throttle: ['KeyW'],
+    brake: ['KeyS'],
+    left: ['KeyA'],
+    right: ['KeyD'],
+    drift: ['Space', 'ShiftLeft'],
+    item: ['KeyE', 'ControlLeft'],
+    lookBack: ['KeyQ'],
+    confirm: ['Space', 'KeyE'],
+    back: ['KeyQ'],
+    up: ['KeyW'],
+    down: ['KeyS'],
+  },
+  kb2: {
+    throttle: ['ArrowUp'],
+    brake: ['ArrowDown'],
+    left: ['ArrowLeft'],
+    right: ['ArrowRight'],
+    drift: ['ShiftRight', 'Period'],
+    item: ['Slash', 'ControlRight', 'Enter'],
+    lookBack: ['Comma'],
+    confirm: ['Enter', 'Slash'],
+    back: ['Backspace'],
+    up: ['ArrowUp'],
+    down: ['ArrowDown'],
+  },
+};
+const SPLIT_LABELS = { kb1: 'Keyboard \u00b7 WASD', kb2: 'Keyboard \u00b7 Arrows' };
+const PAD_IDS = ['pad0', 'pad1', 'pad2', 'pad3'];
 const NAV = ['up', 'down', 'left', 'right'];
 
-const DEADZONE = 0.15;
 const CODE_TO_ACTIONS = new Map();
 for (const [action, codes] of Object.entries(KEY_BINDINGS)) {
   for (const c of codes) {
@@ -50,16 +80,9 @@ for (const [action, codes] of Object.entries(KEY_BINDINGS)) {
     CODE_TO_ACTIONS.get(c).push(action);
   }
 }
-
-/** Radial dead zone + response curve for an analog axis pair, returns the shaped x. */
-function shapeStick(x, y) {
-  const mag = Math.hypot(x, y);
-  if (mag <= DEADZONE) return 0;
-  const scaled = Math.min(1, (mag - DEADZONE) / (1 - DEADZONE));
-  const nx = (x / mag) * scaled;
-  // gentle expo: fine control near the center, full lock at the edge
-  return Math.sign(nx) * Math.pow(Math.abs(nx), 1.35);
-}
+/** Every key code any keyboard half binds (so split-only keys such as Period/Slash/Comma are tracked too). */
+const SPLIT_CODES = new Set();
+for (const half of Object.values(KEY_BINDINGS_SPLIT)) for (const codes of Object.values(half)) for (const c of codes) SPLIT_CODES.add(c);
 
 const isTextTarget = (t) => !!t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
 const isButtonTarget = (t) => !!t && /^(BUTTON|A|SUMMARY)$/.test(t.tagName);
@@ -68,6 +91,10 @@ export class InputManager {
   /** @param {import('../Game.js').Game} game */
   constructor(game) {
     this.game = game;
+    /** InputSource facade fields: the manager itself is the merged 'any' source. */
+    this.id = 'any';
+    this.label = 'Keyboard + Gamepad';
+    this.connected = true;
 
     // ---- continuous driving state ----
     this.throttle = 0;
@@ -111,6 +138,13 @@ export class InputManager {
     this._padPrevAny = false;
     this._lastRumble = 0;
 
+    // ---- per-device sources (kb1, kb2, pad0..3); 'any' is this manager ----
+    this._downT = new Map(); // key code -> performance.now() of its last (non-repeat) keydown
+    this._sources = new Map();
+    for (const id of ['kb1', 'kb2']) this._sources.set(id, new InputSource({ id, label: SPLIT_LABELS[id], keys: KEY_BINDINGS_SPLIT[id], manager: this }));
+    PAD_IDS.forEach((id, i) => this._sources.set(id, new InputSource({ id, label: `Gamepad ${i + 1}`, pad: i, manager: this })));
+    this._padList = null;
+
     this._onKeyDown = (e) => this._keyDown(e);
     this._onKeyUp = (e) => this._keyUp(e);
     this._onBlur = () => this._clear();
@@ -128,15 +162,21 @@ export class InputManager {
     this._offs = [];
     const ev = game?.events;
     if (ev) {
-      const mine = (p) => p?.kart && p.kart === game.player;
+      // haptics go to the pad of the kart's own source ('any' = the merged manager, today's behaviour)
+      const humans = () => game.players?.length ?? (game.player ? 1 : 0);
+      const buzz = (kart, s, w, ms) => {
+        if (!kart?.isPlayer && kart !== game.player) return;
+        const src = kart.controller?.source ?? (humans() <= 1 && kart === game.player ? this : null);
+        src?.rumble?.(s, w, ms);
+      };
       this._offs.push(
-        ev.on(EVT.KART_HIT, (p) => mine(p) && this.rumble(1, 0.8, 380)),
-        ev.on(EVT.KART_WALL, (p) => mine(p) && this.rumble(Math.min(1, (p.impact ?? 0) / 25), 0.4, 140)),
-        ev.on(EVT.KART_LAND, (p) => mine(p) && (p.impact ?? 0) > 8 && this.rumble(Math.min(1, p.impact / 25), 0.2, 120)),
-        ev.on(EVT.KART_BOOST, (p) => mine(p) && this.rumble(0.35, 0.7, 180)),
-        ev.on(EVT.KART_BUMP, (p) => (p.a === game.player || p.b === game.player) && this.rumble(0.5, 0.3, 110)),
-        ev.on(EVT.KART_DRIFT_LEVEL, (p) => mine(p) && this.rumble(0.0, 0.5, 70)),
-        ev.on(EVT.KART_STALL, (p) => mine(p) && this.rumble(0.6, 0.3, 300)),
+        ev.on(EVT.KART_HIT, (p) => buzz(p?.kart, 1, 0.8, 380)),
+        ev.on(EVT.KART_WALL, (p) => buzz(p?.kart, Math.min(1, (p.impact ?? 0) / 25), 0.4, 140)),
+        ev.on(EVT.KART_LAND, (p) => (p.impact ?? 0) > 8 && buzz(p?.kart, Math.min(1, p.impact / 25), 0.2, 120)),
+        ev.on(EVT.KART_BOOST, (p) => buzz(p?.kart, 0.35, 0.7, 180)),
+        ev.on(EVT.KART_BUMP, (p) => { buzz(p?.a, 0.5, 0.3, 110); buzz(p?.b, 0.5, 0.3, 110); }),
+        ev.on(EVT.KART_DRIFT_LEVEL, (p) => buzz(p?.kart, 0.0, 0.5, 70)),
+        ev.on(EVT.KART_STALL, (p) => buzz(p?.kart, 0.6, 0.3, 300)),
       );
     }
   }
@@ -162,11 +202,13 @@ export class InputManager {
     if (e.metaKey || e.altKey) return; // leave browser / OS shortcuts alone
     const code = e.code;
     const actions = CODE_TO_ACTIONS.get(code);
-    if (!actions || isTextTarget(e.target)) return;
+    if ((!actions && !SPLIT_CODES.has(code)) || isTextTarget(e.target)) return;
     if (this._shouldPrevent(e)) e.preventDefault();
     if (this.keys.has(code)) return; // auto-repeat
     this.keys.add(code);
-    for (const a of actions) this._latch[a] = true;
+    if (actions) for (const a of actions) this._latch[a] = true;
+    this._downT.set(code, performance.now());
+    for (const src of this._sources.values()) if (src.keys) src.keyDown(code);
     if (code === 'KeyA' || code === 'ArrowLeft') this._leftT = performance.now();
     if (code === 'KeyD' || code === 'ArrowRight') this._rightT = performance.now();
     this.lastDevice = 'keyboard';
@@ -174,7 +216,7 @@ export class InputManager {
 
   _keyUp(e) {
     const code = e.code;
-    if (!CODE_TO_ACTIONS.has(code)) return;
+    if (!CODE_TO_ACTIONS.has(code) && !SPLIT_CODES.has(code)) return;
     // the held state ends now, but a latched press (down+up between two frames) is still delivered by update()
     this.keys.delete(code);
   }
@@ -194,6 +236,7 @@ export class InputManager {
     for (const a of ACTIONS) this._latch[a] = false;
     this.throttle = this.brake = this.steer = 0;
     this.drift = this.item = this.lookBack = this.aimBack = false;
+    for (const src of this._sources.values()) src.clear();
   }
 
   // ================================================================================================
@@ -208,46 +251,17 @@ export class InputManager {
   }
 
   _readPads(out) {
-    out.steer = 0;
-    out.throttle = 0;
-    out.brake = 0;
-    out.any = false;
-    out.up = out.down = out.left = out.right = false;
-    for (const a of ACTIONS) out[a] = false;
+    resetPadOut(out);
     let pads = [];
     try {
       pads = navigator.getGamepads?.() ?? [];
     } catch {}
+    this._padList = pads;
     let connected = false;
     for (const p of pads) {
       if (!p || !p.connected) continue;
       connected = true;
-      const b = p.buttons;
-      const val = (i) => (b[i] ? (b[i].value > 0 ? b[i].value : b[i].pressed ? 1 : 0) : 0);
-      const on = (i) => !!b[i] && (b[i].pressed || b[i].value > 0.5);
-      const lx = p.axes[0] ?? 0, ly = p.axes[1] ?? 0;
-      let steer = shapeStick(lx, ly);
-      const dl = on(PAD.LEFT), dr = on(PAD.RIGHT);
-      if (dl !== dr) steer = dr ? 1 : -1;
-      if (Math.abs(steer) > Math.abs(out.steer)) out.steer = steer;
-      out.throttle = Math.max(out.throttle, val(PAD.A));
-      out.brake = Math.max(out.brake, val(PAD.B), val(PAD.LT));
-      if (on(PAD.RB) || on(PAD.RT)) out.drift = true;
-      if (on(PAD.LB) || on(PAD.X)) out.item = true;
-      if (on(PAD.Y)) out.lookBack = true;
-      if (on(PAD.START)) out.pause = true;
-      if (on(PAD.A)) out.confirm = true;
-      if (on(PAD.B)) out.back = true;
-      // menu navigation: d-pad + stick with hysteresis
-      const N = this._padNav;
-      const th = (was) => (was ? 0.35 : 0.6);
-      if (on(PAD.UP) || ly < -th(N.up)) out.up = true;
-      if (on(PAD.DOWN) || ly > th(N.down)) out.down = true;
-      if (dl || lx < -th(N.left)) out.left = true;
-      if (dr || lx > th(N.right)) out.right = true;
-      // any activity switches lastDevice to the gamepad
-      for (let i = 0; i < b.length; i++) if (on(i)) out.any = true;
-      if (Math.abs(steer) > 0.3 || Math.abs(ly) > 0.6) out.any = true;
+      readOnePad(p, out, this._padNav);
     }
     this.gamepadConnected = connected;
     return out;
@@ -273,6 +287,7 @@ export class InputManager {
   update(dt = 0) {
     const pad = this._readPads(this._padOut ?? (this._padOut = {}));
     if (pad.any) this.lastDevice = 'gamepad';
+    for (const src of this._sources.values()) src.update(dt, this.keys, this._padList, this._downT);
     const K = this.keys;
     const kb = (a) => {
       const codes = KEY_BINDINGS[a];
@@ -338,6 +353,25 @@ export class InputManager {
   /** True while the action is held. */
   held(action) {
     return this._held[action] === true;
+  }
+
+  /** The InputSource for a device id: 'any' (this merged manager), 'kb1', 'kb2', 'pad0'..'pad3'. Unknown ids -> 'any'. */
+  getSource(id = 'any') {
+    return id === 'any' ? this : this._sources.get(id) ?? this;
+  }
+
+  /** Device ids currently available: kb1, kb2 and every connected pad. */
+  devices() {
+    const out = ['kb1', 'kb2'];
+    for (const id of PAD_IDS) if (this._sources.get(id).connected) out.push(id);
+    return out;
+  }
+
+  /** Device ids (never 'any') whose `action` went down this frame. */
+  pressedBy(action) {
+    const out = [];
+    for (const [id, src] of this._sources) if (src.pressed(action)) out.push(id);
+    return out;
   }
 
   /** pressed(), plus auto-repeat while held (0.4 s delay, then every 0.11 s). Handy for menu navigation. */

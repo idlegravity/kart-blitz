@@ -281,7 +281,7 @@ export function trophySvg(tier, cls = '') {
 // ------------------------------------------------------------------------------------------------
 const KEY_LABELS = {
   Enter: 'Enter', Escape: 'Esc', Backspace: '⌫', Space: 'Space', ArrowUp: '↑', ArrowDown: '↓', ArrowLeft: '←', ArrowRight: '→',
-  ShiftLeft: 'Shift', ShiftRight: 'Shift', ControlLeft: 'Ctrl', ControlRight: 'Ctrl', NumpadEnter: 'Enter',
+  ShiftLeft: 'Shift', ShiftRight: 'Shift', ControlLeft: 'Ctrl', ControlRight: 'Ctrl', NumpadEnter: 'Enter', Slash: '/', Period: '.', Comma: ',',
   KeyW: 'W', KeyA: 'A', KeyS: 'S', KeyD: 'D', KeyE: 'E', KeyK: 'K', KeyQ: 'Q', KeyC: 'C', KeyP: 'P',
 };
 
@@ -319,6 +319,19 @@ export function padBtn(name, cls = '') {
  */
 export function actionGlyph(action, device = 'keyboard') {
   const pad = device === 'gamepad';
+  if (device === 'kb1' || device === 'kb2') {
+    // split-screen keyboard halves (WASD side / arrows side)
+    const one = device === 'kb1';
+    switch (action) {
+      case 'confirm': case 'skip': return one ? `${keyCap('Space')}` : keyCap('Enter');
+      case 'back': case 'backAlt': return one ? keyCap('Q') : keyCap('Backspace');
+      case 'nav': return one ? `${keyCap('W')}${keyCap('A')}${keyCap('S')}${keyCap('D')}` : `${keyCap('ArrowUp')}${keyCap('ArrowDown')}${keyCap('ArrowLeft')}${keyCap('ArrowRight')}`;
+      case 'navH': return one ? `${keyCap('A')}${keyCap('D')}` : `${keyCap('ArrowLeft')}${keyCap('ArrowRight')}`;
+      case 'navV': return one ? `${keyCap('W')}${keyCap('S')}` : `${keyCap('ArrowUp')}${keyCap('ArrowDown')}`;
+      case 'pause': return keyCap('Escape');
+      default: return '';
+    }
+  }
   switch (action) {
     case 'confirm': return pad ? padBtn('A') : keyCap('Enter');
     case 'back': return pad ? padBtn('B') : keyCap('Escape');

@@ -8,8 +8,15 @@ import { h } from '../dom.js';
 const INK = '#0c0625';
 
 export class Minimap {
-  constructor(hud) {
+  /**
+   * @param {object} hud owner (unused except for identity)
+   * @param {{ labels?: boolean }} [opts] split-screen: `labels` writes "P1".."P4" next to each human's arrow
+   */
+  constructor(hud, opts = {}) {
     this.hud = hud;
+    this.opts = opts;
+    /** Split-screen: [{ kart, color, tag }] — every human is drawn as an arrow in their player colour. */
+    this.humans = null;
     this.canvas = document.createElement('canvas');
     this.ctx2d = this.canvas.getContext('2d');
     this.layer = document.createElement('canvas');
@@ -27,9 +34,10 @@ export class Minimap {
     this._accum = 0;
   }
 
-  setup(track, karts) {
+  setup(track, karts, humans = null) {
     this.track = track;
     this.karts = karts;
+    this.humans = humans && humans.length > 1 ? humans : null;
     const mm = track?.minimap;
     this.valid = !!(mm && mm.points && mm.points.length > 2 && mm.bounds);
     this.el.style.display = this.valid ? '' : 'none';
@@ -138,6 +146,10 @@ export class Minimap {
     g.clearRect(0, 0, css, css);
     g.drawImage(this.layer, 0, 0, css, css);
     const k = this._k, ox = this._ox, oy = this._oy;
+    if (this.humans) {
+      this._updateSplit(g, css, k, ox, oy);
+      return;
+    }
     let player = null;
     // rivals first (leader on top of the pack), player last
     const karts = this.karts;
@@ -170,6 +182,60 @@ export class Minimap {
       g.fill();
       g.restore();
       this._dot(g, px, py, css * 0.05, player.character.colors.primary, true);
+    }
+  }
+
+  /** Several humans: CPUs as small dots, humans as big coloured arrows (P1 on top). */
+  _updateSplit(g, css, k, ox, oy) {
+    const humans = this.humans;
+    const isHuman = new Set(humans.map((x) => x.kart));
+    const karts = this.karts;
+    for (let i = karts.length - 1; i >= 0; i--) {
+      const kt = karts[i];
+      if (isHuman.has(kt)) continue;
+      this._dot(g, kt.position.x * k + ox, kt.position.z * k + oy, css * 0.03, kt.character.colors.primary, false);
+    }
+    for (let i = humans.length - 1; i >= 0; i--) {
+      const { kart, color, tag } = humans[i];
+      const px = kart.position.x * k + ox, py = kart.position.z * k + oy;
+      const ang = Math.atan2(Math.cos(kart.yaw ?? 0), Math.sin(kart.yaw ?? 0));
+      const r = css * 0.06;
+      g.save();
+      g.translate(px, py);
+      g.rotate(ang);
+      g.fillStyle = color;
+      g.strokeStyle = '#fff';
+      g.lineWidth = css * 0.05;
+      g.lineJoin = 'round';
+      g.beginPath();
+      g.moveTo(r * 1.9, 0);
+      g.lineTo(r * 0.3, -r * 1.1);
+      g.lineTo(r * 0.3, r * 1.1);
+      g.closePath();
+      g.stroke();
+      g.strokeStyle = INK;
+      g.lineWidth = css * 0.022;
+      g.stroke();
+      g.fill();
+      g.restore();
+      // body dot
+      g.beginPath();
+      g.arc(px, py, r * 0.95, 0, Math.PI * 2);
+      g.fillStyle = color;
+      g.fill();
+      g.lineWidth = css * 0.024;
+      g.strokeStyle = INK;
+      g.stroke();
+      if (this.opts.labels) {
+        g.font = `400 ${css * 0.075}px "Lilita One", sans-serif`;
+        g.textAlign = 'center';
+        g.textBaseline = 'middle';
+        g.lineWidth = css * 0.03;
+        g.strokeStyle = INK;
+        g.strokeText(tag, px, py - r * 2.1);
+        g.fillStyle = '#fff';
+        g.fillText(tag, px, py - r * 2.1);
+      }
     }
   }
 

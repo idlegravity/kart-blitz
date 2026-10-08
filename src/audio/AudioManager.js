@@ -22,6 +22,11 @@ const MUSIC_TRIM = 0.9;
 const SFX_TRIM = 1.0;
 const ENGINE_TRIM = 0.24;
 const CPU_VOICES = 3;
+const CPU_VOICES_SPLIT = 4;
+/** Per-human engine level by number of humans (keeps the summed mix about constant). */
+const PLAYER_ENGINE_SCALE = [1, 0.62, 0.5, 0.42];
+const QUAD_PAN = 0.28;
+const CUE_GAP = { placeCue: 0.8, wrongWay: 2.5, itemGet: 0.12, finish: 1.4 };
 const HEAR_RANGE = 90; // metres
 const MENU_SCREENS = new Set(['title', 'main', 'cc', 'character', 'cup', 'track', 'options', 'controls']);
 
@@ -49,6 +54,9 @@ export class AudioManager {
     this._pendingMusic = null;
     this._finishAt = -1e9;
     this._wired = false;
+    this._cueAt = new Map();
+    this._finalLapDone = false;
+    this._engineCpuN = CPU_VOICES;
     this._wire();
   }
 
@@ -80,6 +88,8 @@ export class AudioManager {
       this._starActive = false;
       this._lastWant = null;
       this._roll.active = false;
+      this._finalLapDone = false;
+      this._cueAt.clear();
       this._engineScale = 1;
       this._paused = false;
       this._pendingMusic = null;
@@ -130,12 +140,16 @@ export class AudioManager {
     if (!fn) return;
     const meta = SFX_META[name] ?? {};
     const now = ctx.currentTime;
-    let st = this._sfxState.get(name);
-    if (!st) this._sfxState.set(name, (st = { last: -9, ends: [] }));
+    // split-screen: cooldowns are tracked per human so four players don't mute each other's cues, and polyphony scales up
+    const nh = this._humans().length;
+    const hi = nh > 1 ? this._humanIndex(opts.kart) : -1;
+    const stKey = hi >= 0 ? name + '#' + hi : name;
+    let st = this._sfxState.get(stKey);
+    if (!st) this._sfxState.set(stKey, (st = { last: -9, ends: [] }));
     if (meta.cool && now - st.last < meta.cool) return;
     if (meta.max) {
       st.ends = st.ends.filter((e) => e > now);
-      if (st.ends.length >= meta.max) return;
+      if (st.ends.length >= meta.max * (hi >= 0 ? 1 : nh > 1 ? Math.min(nh, 2) : 1)) return;
     }
     const sp = this._spatial(opts);
     if (!sp) return;
@@ -196,6 +210,66 @@ export class AudioManager {
     return { rms, peak, db: rms > 1e-6 ? 20 * Math.log10(rms) : -120 };
   }
 
+  /** All human karts (game.players), falling back to [game.player]. */
+  _humans() {
+    const g = this.game;
+    if (g.players?.length) return g.players;
+    return g.player ? [g.player] : [];
+  }
+
+  _isHuman(k) {
+    if (!k) return false;
+    const g = this.game;
+    if (g.players?.length) return g.players.includes(k);
+    return k === g.player;
+  }
+
+  /** Human index of a kart (0..3), or -1. */
+  _humanIndex(k) {
+    if (!k) return -1;
+    const g = this.game;
+    if (g.players?.length) return g.players.indexOf(k);
+    return k === g.player ? 0 : -1;
+  }
+
+  /** Cameras of every view (fallback: game.camera). */
+  _cameras() {
+    const g = this.game;
+    if (g.views?.length) return g.views;
+    return g.camera ? [{ camera: g.camera, kart: g.player, rect: null }] : [];
+  }
+
+  /** The view whose camera is closest to a world point. */
+  _nearestView(pos) {
+    const vs = this._cameras();
+    if (vs.length < 2) return vs[0] ?? null;
+    let best = vs[0], bd = Infinity;
+    for (const v of vs) {
+      const c = v.camera.position;
+      const d = (pos.x - c.x) ** 2 + (pos.y - c.y) ** 2 + (pos.z - c.z) ** 2;
+      if (d < bd) { bd = d; best = v; }
+    }
+    return best;
+  }
+
+  /** Gentle stereo placement for a human-owned sound: only in quad layouts (left column -, right column +). */
+  _humanPan(kart) {
+    const g = this.game;
+    if (g.layout !== 'quad' || !g.views?.length) return 0;
+    const v = g.views.find((vw) => vw.kart === kart);
+    if (!v?.rect) return 0;
+    const cx = v.rect.x + v.rect.w / 2;
+    return cx < 0.5 ? -QUAD_PAN : QUAD_PAN;
+  }
+
+  /** Cross-player rate limit for a named cue; returns true when the cue may play now. */
+  _cue(key, gap = CUE_GAP[key] ?? 0.5) {
+    const now = performance.now() / 1000;
+    if (now - (this._cueAt.get(key) ?? -1e9) < gap) return false;
+    this._cueAt.set(key, now);
+    return true;
+  }
+
   get ready() {
     return !!this.ctx && this.ctx.state === 'running';
   }
@@ -207,7 +281,12 @@ export class AudioManager {
       music: this.music?.currentKey ?? null,
       players: this.music?.players.length ?? 0,
       tempo: this.music?.tempoScale ?? 1,
-      engines: this._engines ? 1 + this._engines.cpus.filter((c) => c.kart).length : 0,
+      engines: this._engines ? this._engines.players.length + this._engines.cpus.filter((c) => c.kart).length : 0,
+      humans: this._humans().length,
+      playerVoices: this._engines?.players.length ?? 0,
+      cpuVoices: this._engines?.cpus.filter((c) => c.kart).length ?? 0,
+      cpuAssigned: this._engines?.cpus.map((c) => c.kart?.id ?? null) ?? [],
+      engineScale: PLAYER_ENGINE_SCALE[Math.min(3, Math.max(0, this._humans().length - 1))],
       time: this.ctx?.currentTime ?? 0,
     };
   }
@@ -339,7 +418,7 @@ export class AudioManager {
     this._wired = true;
     const g = this.game;
     const on = (evt, fn) => this._offs.push(g.events.on(evt, fn));
-    const isP = (k) => !!k && k === g.player;
+    const isP = (k) => this._isHuman(k);
     const sfx = (n, o) => this.playSfx(n, o);
 
     on(EVT.SETTINGS_CHANGED, () => this._applyVolumes());
@@ -383,26 +462,36 @@ export class AudioManager {
     on(EVT.RACE_LAP, ({ kart, isFinalLap }) => {
       if (!isP(kart)) return;
       if (isFinalLap) {
-        sfx('finalLap', { noVary: true });
-        this.music?.setTempoScale(1.12);
-        this.duckMusic(0.3, 0.6, 0.6);
-      } else sfx('lap', { noVary: true });
+        // jingle + faster music once, for the first human to start the final lap; later humans get the plain lap cue
+        if (!this._finalLapDone) {
+          this._finalLapDone = true;
+          sfx('finalLap', { noVary: true, kart });
+          this.music?.setTempoScale(1.12);
+          this.duckMusic(0.3, 0.6, 0.6);
+        } else sfx('lap', { noVary: true, kart });
+      } else sfx('lap', { noVary: true, kart });
     });
     on(EVT.RACE_FINISH, ({ kart, place }) => {
       if (!isP(kart)) return;
       this._finishAt = performance.now();
-      sfx(place <= 3 ? 'finishWin' : 'finishLose', { noVary: true });
+      if (this._humans().length > 1 && !this._cue('finish')) return;
+      sfx(place <= 3 ? 'finishWin' : 'finishLose', { noVary: true, kart });
       this.duckMusic(0.55, 2.4, 1.2);
     });
     on(EVT.RACE_PLACE, ({ kart, place, prev }) => {
       if (!isP(kart) || g.race?.phase !== 'racing' || !(prev > 0)) return;
-      sfx(place < prev ? 'placeUp' : 'placeDown');
+      if (this._humans().length > 1 && !this._cue('placeCue')) return;
+      sfx(place < prev ? 'placeUp' : 'placeDown', { kart });
     });
     on(EVT.RACE_WRONG_WAY, ({ kart, wrongWay }) => {
-      if (isP(kart) && wrongWay) sfx('wrongWay');
+      if (!isP(kart) || !wrongWay) return;
+      if (this._humans().length > 1 && !this._cue('wrongWay')) return;
+      sfx('wrongWay', { kart });
     });
     on(EVT.RACE_RESULTS, ({ results }) => {
-      const me = results?.find((r) => r.isPlayer);
+      // best human decides victory vs. results jingle
+      let me = null;
+      for (const r of results ?? []) if (r.isPlayer && (!me || r.place < me.place)) me = r;
       this.music?.setTempoScale(1);
       this._starActive = false;
       this._engineScale = 0.25;
@@ -490,7 +579,8 @@ export class AudioManager {
     });
     on(EVT.ITEM_GET, ({ kart }) => {
       if (!isP(kart)) return;
-      sfx('itemGet', { noVary: true });
+      if (this._humans().length > 1 && !this._cue('itemGet')) return;
+      sfx('itemGet', { noVary: true, kart });
     });
     on(EVT.ITEM_THROW, ({ kart, item, direction }) => {
       const vol = isP(kart) ? 1 : 0.6;
@@ -510,8 +600,11 @@ export class AudioManager {
     on(EVT.ITEM_EXPLODE, ({ position, radius, item }) => {
       sfx('explosion', { position, size: clamp((radius ?? 7) / 7, 0.6, 1.5), noVary: false });
       if (item === 'comet') this._cometSirenStop();
-      const p = g.player;
-      if (p && position && Math.hypot(p.position.x - position.x, p.position.z - position.z) < 25) this.duckMusic(0.35, 0.3, 0.9);
+      if (position) {
+        for (const p of this._humans()) {
+          if (Math.hypot(p.position.x - position.x, p.position.z - position.z) < 25) { this.duckMusic(0.35, 0.3, 0.9); break; }
+        }
+      }
     });
     on(EVT.ITEM_DESTROY, ({ position }) => sfx('destroy', { position, volume: 0.6 }));
     on(EVT.ITEM_LIGHTNING, () => {
@@ -519,13 +612,13 @@ export class AudioManager {
       this.duckMusic(0.5, 1.4, 1.2);
     });
     on(EVT.ITEM_COMET_WARN, ({ target }) => {
-      if (isP(target)) sfx('siren', { noVary: true, dur: 3.2 });
+      if (isP(target)) sfx('siren', { noVary: true, dur: 3.2, kart: target });
     });
   }
 
   _cometSirenStop() {
     // sirens are short one-shots (3.2s); nothing persistent to stop, but clear the cooldown so a new warning can play
-    this._sfxState.get('siren')?.ends.splice(0);
+    for (const [k, v] of this._sfxState) if (k === 'siren' || k.startsWith('siren#')) v.ends.splice(0);
   }
 
   _setPauseFx(paused) {
@@ -545,10 +638,11 @@ export class AudioManager {
   // ==================================================================================================
   /** Returns { gain, pan } for a sound source, or null when inaudible. Player / global sounds are centred. */
   _spatial(o) {
-    const g = this.game;
-    if (o.global || (o.kart && o.kart === g.player)) return { gain: 1, pan: 0 };
+    if (o.global) return { gain: 1, pan: 0 };
+    if (o.kart && this._isHuman(o.kart)) return { gain: 1, pan: this._humanPan(o.kart) };
     const pos = o.position ?? o.kart?.position;
-    const cam = g.camera;
+    const view = pos ? this._nearestView(pos) : null;
+    const cam = view?.camera;
     if (!pos || !cam) return { gain: 1, pan: 0 };
     const cp = cam.position;
     const dx = pos.x - cp.x, dy = pos.y - cp.y, dz = pos.z - cp.z;
@@ -566,11 +660,14 @@ export class AudioManager {
   // engines
   // ==================================================================================================
   _buildEngines() {
-    if (this._engines || !this.ctx || !this.game.player) return;
+    const humans = this._humans();
+    if (this._engines || !this.ctx || !humans.length) return;
     const ctx = this.ctx;
+    const nCpu = humans.length > 1 ? CPU_VOICES_SPLIT : CPU_VOICES;
     this._engines = {
-      player: new EngineVoice(ctx, this.engineBus, { player: true }),
-      cpus: Array.from({ length: CPU_VOICES }, () => ({ voice: new EngineVoice(ctx, this.engineBus, { player: false }), kart: null })),
+      players: humans.map(() => new EngineVoice(ctx, this.engineBus, { player: true })),
+      humans: humans.slice(),
+      cpus: Array.from({ length: nCpu }, () => ({ voice: new EngineVoice(ctx, this.engineBus, { player: false }), kart: null })),
     };
     this._assignT = 0;
   }
@@ -578,7 +675,7 @@ export class AudioManager {
   _destroyEngines() {
     const e = this._engines;
     if (!e) return;
-    e.player.dispose();
+    for (const v of e.players) v.dispose();
     for (const c of e.cpus) c.voice.dispose();
     this._engines = null;
   }
@@ -603,48 +700,57 @@ export class AudioManager {
 
   _updateEngines(dt) {
     const g = this.game;
-    if (g.state !== 'race' || !g.player) {
+    const humans = this._humans();
+    if (g.state !== 'race' || !humans.length) {
       if (this._engines) this._destroyEngines();
       return;
     }
+    // rebuild if the set of humans changed (e.g. a new race started without a teardown in between)
+    if (this._engines && (this._engines.humans.length !== humans.length || this._engines.humans.some((h, i) => h !== humans[i]))) this._destroyEngines();
     if (!this._engines) this._buildEngines();
     const e = this._engines;
     if (!e) return;
+    const nh = humans.length;
+    const split = nh > 1;
     // hushed during the intro flyover, full presence from the countdown (revving) on, faded out under the results
     const quiet = this._paused ? 0 : this._engineScale * (g.race?.phase === 'intro' ? 0.3 : 1);
-    const p = g.player;
-    const pv = p.velocity;
+    const pScale = PLAYER_ENGINE_SCALE[Math.min(3, nh - 1)];
 
-    // ---- player
-    {
+    // ---- player voices (one per human)
+    for (let i = 0; i < nh; i++) {
+      const p = humans[i];
       const rpm = this._kartRpm(p, dt);
       const top = Math.max(p.topSpeed || 30, 10);
-      e.player.update(dt, {
+      e.players[i].update(dt, {
         rpm,
         throttle: p.throttleAmount ?? 0,
         boost: p.boostTime > 0 ? clamp(p.boostPower ?? 1, 0, 1.3) : 0,
-        skid: this._skid(p),
+        skid: this._skid(p) * (split ? 0.8 : 1),
         skidLevel: p.driftLevel || 0,
         offroad: p.surface === 'offroad' ? clamp(Math.abs(p.speed) / top, 0, 1) : 0,
-        gain: 0.85 * quiet,
-        pan: 0,
+        gain: 0.85 * quiet * pScale,
+        pan: this._humanPan(p),
         pitch: p.shrinkTime > 0 ? 1.35 : 1,
       });
     }
 
-    // ---- CPU voices: the 3 nearest karts get a voice, attenuated & panned from the camera
+    // ---- CPU voices: the karts nearest to ANY human get a voice, attenuated & panned from the nearest view camera
     this._assignT -= dt;
-    const cam = g.camera;
     if (this._assignT <= 0) {
       this._assignT = 0.25;
       const cands = [];
       for (const k of g.karts) {
-        if (k === p) continue;
-        const dx = k.position.x - cam.position.x, dz = k.position.z - cam.position.z;
-        cands.push({ k, d: Math.hypot(dx, dz) });
+        if (humans.includes(k)) continue;
+        let d = Infinity;
+        for (const v of this._cameras()) {
+          const c = v.camera.position;
+          const dd = Math.hypot(k.position.x - c.x, k.position.z - c.z);
+          if (dd < d) d = dd;
+        }
+        cands.push({ k, d });
       }
       cands.sort((a, b) => a.d - b.d);
-      const want = cands.slice(0, CPU_VOICES).filter((c) => c.d < HEAR_RANGE).map((c) => c.k);
+      const want = cands.slice(0, e.cpus.length).filter((c) => c.d < HEAR_RANGE).map((c) => c.k);
       // keep existing assignments that are still wanted
       for (const slot of e.cpus) if (slot.kart && !want.includes(slot.kart)) slot.kart = null;
       for (const k of want) {
@@ -653,13 +759,17 @@ export class AudioManager {
         if (free) free.kart = k;
       }
     }
-    const el = cam.matrixWorld?.elements;
+    const cpuScale = split ? 0.7 : 1;
     for (const slot of e.cpus) {
       const k = slot.kart;
       if (!k) {
         slot.voice.update(dt, { rpm: 0.2, throttle: 0, boost: 0, skid: 0, gain: 0 });
         continue;
       }
+      const view = this._nearestView(k.position);
+      const cam = view.camera;
+      const pv = (view.kart ?? humans[0]).velocity;
+      const el = cam.matrixWorld?.elements;
       const dx = k.position.x - cam.position.x, dy = k.position.y - cam.position.y, dz = k.position.z - cam.position.z;
       const dist = Math.max(0.5, Math.hypot(dx, dy, dz));
       const nx = dx / dist, ny = dy / dist, nz = dz / dist;
@@ -672,7 +782,7 @@ export class AudioManager {
         boost: 0,
         skid: this._skid(k) * 0.9,
         skidLevel: k.driftLevel || 0,
-        gain: att * 0.8 * quiet,
+        gain: att * 0.8 * quiet * cpuScale,
         pan: el ? clamp((nx * el[0] + ny * el[1] + nz * el[2]) * 0.9, -0.9, 0.9) : 0,
         pitch: clamp(1 / (1 + vrel / 130), 0.86, 1.16) * (k.shrinkTime > 0 ? 1.35 : 1),
         airCut: 2600 + 15000 * att,
@@ -710,7 +820,7 @@ export class AudioManager {
     const ctx = this.ctx;
     if (ctx.state !== 'running' && this.unlocked && !document.hidden) this._tryResume(dt);
     const g = this.game;
-    const p = g.player;
+    const humans = this._humans();
     const pm = this._pendingMusic;
     if (pm && performance.now() >= pm.at) {
       this._pendingMusic = null;
@@ -718,15 +828,16 @@ export class AudioManager {
       this._applyMusic(1.0);
     }
 
-    if (g.state === 'race' && p) {
-      // star power → frantic music, back to the race song afterwards
-      const star = p.starTime > 0 && g.race.phase !== 'results';
+    if (g.state === 'race' && humans.length) {
+      // star power → frantic music (1P only; split-screen uses the star sting SFX instead), back to the race song afterwards
+      const star = humans.length === 1 && humans[0].starTime > 0 && g.race.phase !== 'results';
       if (star !== this._starActive) {
         this._starActive = star;
         this._applyMusic(0.5);
       }
-      // roulette ticks (same cadence as the HUD)
+      // roulette ticks (same cadence as the HUD); in split-screen only the first rolling human ticks
       const r = this._roll;
+      const p = humans.find((h) => h.rouletteTime > 0) ?? humans[0];
       if (this._paused) {
         // frozen while paused
       } else if (p.rouletteTime > 0) {
@@ -740,7 +851,7 @@ export class AudioManager {
         if (r.clock >= 0.05 + 0.16 * progress * progress) {
           r.clock = 0;
           r.idx++;
-          this.playSfx('rouletteTick', { index: r.idx % 9, noVary: true });
+          this.playSfx('rouletteTick', { index: r.idx % 9, noVary: true, kart: humans.length > 1 ? p : undefined });
         }
       } else r.active = false;
     } else if (this._starActive) {

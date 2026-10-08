@@ -9,6 +9,8 @@
  *   timetrial   solo race → results with a record object
  *   pause       Esc toggles pause during a race, sim time freezes
  *   lifecycle   restart ×3 + quit → no scene/GPU-resource leaks
+ *   split:N     N-player (2..4) 1-lap autodrive split-screen race → all humans finish, views/layout correct
+ *   perf:split2 / perf:split4   real-time fps + draw calls in split-screen
  *   perf:<id>   real-time fps + draw calls + triangles per track
  *
  * Usage: node scripts/smoke.mjs [--only=race,perf] [--tracks=meadow,neon] [--shots] [--keep] [--dist]
@@ -230,6 +232,72 @@ for (const id of TRACKS) {
     await shot(page, `perf-${id}.png`);
     const detail = `fps=${r.fps.toFixed(1)} calls=${r.calls} tris=${(r.tris / 1e6).toFixed(2)}M`;
     if (r.fps < 50) throw new Error(`low fps: ${detail}`);
+    return detail;
+  });
+}
+
+// ---------------------------------------------------------------------------------------- split-screen
+const splitShotsDir = path.join(root, 'snaps', 'split', 'core');
+fs.mkdirSync(splitShotsDir, { recursive: true });
+for (const n of [2, 3, 4]) {
+  await scenario(`split:${n}`, async (page) => {
+    await go(page, `?quick=1&players=${n}&track=meadow&skipintro=1&autodrive=1&laps=1&timescale=4&nopause=1&mute=1`);
+    await waitFor(page, () => window.__game?.state === 'race', 40000);
+    await page.waitForTimeout(3000);
+    await page.screenshot({ path: path.join(splitShotsDir, `smoke-split${n}-mid.png`) });
+    const v = await page.evaluate(() => ({
+      views: __game.views.length, players: __game.players.length, layout: __game.layout, split: __game.isSplit,
+      overview: !!__game.overviewRect, karts: __game.karts.length,
+      idx: __game.players.map((k) => k.playerIndex).join(','),
+      cams: new Set(__game.views.map((x) => x.camera)).size,
+      aspects: __game.views.map((x) => x.camera.aspect.toFixed(2)).join('/'),
+    }));
+    const wantLayout = n === 2 ? 'h2' : 'quad';
+    if (v.views !== n || v.players !== n) throw new Error(`expected ${n} views/players, got ${v.views}/${v.players}`);
+    if (v.layout !== wantLayout || !v.split) throw new Error(`layout ${v.layout} split=${v.split}`);
+    if (v.overview !== (n === 3)) throw new Error(`overviewRect ${v.overview} for ${n}P`);
+    if (v.cams !== n) throw new Error('views do not have distinct cameras');
+    if (v.karts !== 8) throw new Error(`expected 8 karts, got ${v.karts}`);
+    await waitFor(page, () => __game.race.phase === 'results', 150000);
+    await page.waitForTimeout(1200);
+    await page.screenshot({ path: path.join(splitShotsDir, `smoke-split${n}-results.png`) });
+    const r = await page.evaluate(() => ({
+      humans: __game.race.results.filter((x) => x.isPlayer).length,
+      humansDone: __game.players.every((k) => k.finished && !k._estimated),
+      pidx: __game.race.results.filter((x) => x.playerIndex >= 0).map((x) => x.playerIndex).sort().join(','),
+      nan: __game.karts.some((k) => !Number.isFinite(k.position.x + k.position.y + k.position.z)),
+    }));
+    if (r.nan) throw new Error('non-finite kart position');
+    if (r.humans !== n || !r.humansDone) throw new Error(`humans in results ${r.humans}, all genuinely finished=${r.humansDone}`);
+    if (r.pidx !== [...Array(n).keys()].join(',')) throw new Error(`result playerIndex values ${r.pidx}`);
+    // teardown must clear the views
+    await page.evaluate(() => __game.quitToMenu());
+    const after = await page.evaluate(() => ({ v: __game.views.length, p: __game.players.length, s: __game.isSplit }));
+    if (after.v || after.p || after.s) throw new Error('views/players not cleared after quitToMenu');
+    return `layout=${v.layout} aspects=${v.aspects} idx=${v.idx}`;
+  });
+}
+for (const n of [2, 4]) {
+  await scenario(`perf:split${n}`, async (page) => {
+    const q = n === 4 ? '&quality=medium' : '';
+    await go(page, `?quick=1&players=${n}&track=meadow&skipintro=1&autodrive=1&nopause=1&mute=1${q}`);
+    await waitFor(page, () => window.__game?.state === 'race', 40000);
+    await page.waitForTimeout(6000);
+    const r = await page.evaluate(() => new Promise((res) => {
+      let f = 0, calls = 0, tris = 0;
+      const t0 = performance.now();
+      const loop = () => {
+        f++;
+        calls = Math.max(calls, __game.renderer.info.render.calls);
+        tris = Math.max(tris, __game.renderer.info.render.triangles);
+        if (performance.now() - t0 < 4000) requestAnimationFrame(loop);
+        else res({ fps: f / ((performance.now() - t0) / 1000), calls, tris });
+      };
+      requestAnimationFrame(loop);
+    }));
+    await page.screenshot({ path: path.join(splitShotsDir, `perf-split${n}.png`) });
+    const detail = `fps=${r.fps.toFixed(1)} calls=${r.calls} tris=${(r.tris / 1e6).toFixed(2)}M`;
+    if (r.fps < (n === 4 ? 40 : 50)) throw new Error(`low fps: ${detail}`);
     return detail;
   });
 }

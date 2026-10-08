@@ -11,7 +11,7 @@
 import * as THREE from 'three';
 import { events } from './core/EventBus.js';
 import { EVT } from './core/events.js';
-import { CC_CLASSES, DEFAULT_SETTINGS, QUALITY, MODES, GP_POINTS, MAX_KARTS, DEFAULT_LAPS } from './core/constants.js';
+import { CC_CLASSES, DEFAULT_SETTINGS, QUALITY, MODES, GP_POINTS, MAX_KARTS, MAX_PLAYERS, PLAYER_COLORS, DEFAULT_LAPS } from './core/constants.js';
 import { makeRng } from './core/math.js';
 import { CHARACTERS, getCharacter } from './data/characters.js';
 import { createTrack, TRACK_LIST, CUPS } from './track/index.js';
@@ -57,6 +57,15 @@ export class Game {
     this.karts = [];
     /** @type {Kart|null} */
     this.player = null;
+    /** Human karts in player order ([] outside a race). players[0] === player. */
+    this.players = [];
+    /** One View per human: { index, kart, camera, cameraController, rect, color } ([] outside a race). */
+    this.views = [];
+    /** 'single' | 'h2' | 'quad' */
+    this.layout = 'single';
+    /** 3P only: the free bottom-right quadrant (normalized rect, origin top-left) or null. */
+    this.overviewRect = null;
+    this.isSplit = false;
     this.trackList = TRACK_LIST;
     this.cups = CUPS;
     this.characters = CHARACTERS;
@@ -100,7 +109,7 @@ export class Game {
     });
     events.on(EVT.RACE_FINISH, ({ kart }) => {
       // CPU takes over the player's kart after the finish line (classic kart-racer behaviour).
-      if (kart === this.player && kart.controller instanceof PlayerController) {
+      if (kart.isPlayer && kart.controller instanceof PlayerController) {
         kart.controller.dispose?.();
         kart.controller = new AIController(this, kart, { skill: 0.9, autopilot: true });
       }
@@ -126,6 +135,7 @@ export class Game {
         mode: this.debug.mode,
         trackId: this.debug.track,
         characterId: this.debug.char,
+        players: this.debug.players,
         cc: this.debug.cc,
         laps: this.debug.laps,
         aiCount: this.debug.ai,
@@ -183,11 +193,14 @@ export class Game {
       this.track?.update(sdt, (this.cameraController.target ?? this.player ?? this.karts[0])?.position ?? null);
       for (const k of this.karts) k.model?.update(sdt, k);
       this.effects.update(sdt);
-      this.cameraController.update(sdt);
+      const views = this.views;
+      if (views.length > 1) for (const v of views) v.cameraController.update(sdt);
+      else this.cameraController.update(sdt);
     }
     this.audio.update(dt);
     this.ui.update(dt);
-    this.postfx.render(this.scene, this.camera, sdt);
+    if (this.views.length > 1 && this.postfx.renderViews) this.postfx.renderViews(this.scene, this.views, sdt);
+    else this.postfx.render(this.scene, this.camera, sdt);
   }
 
   // =====================================================================================
@@ -225,9 +238,13 @@ export class Game {
       this.track = createTrack(config.trackId, this);
       this.track.build();
       this._spawnKarts(config);
+      this._buildViews(config);
 
-      const ctx = { track: this.track, karts: this.karts, player: this.player, config };
+      const ctx = { track: this.track, karts: this.karts, player: this.player, players: this.players, views: this.views, config };
       for (const sys of this._raceSystems) sys.setupRace?.(ctx);
+      // extra views' camera controllers are not in _raceSystems
+      for (const v of this.views) if (v.cameraController !== this.cameraController) v.cameraController.setupRace?.({ ...ctx, player: v.kart });
+      events.emit(EVT.VIEWS_CHANGED, { views: this.views, layout: this.layout, overviewRect: this.overviewRect });
       events.emit(EVT.RACE_SETUP, ctx);
       this.race.setup(ctx);
       try {
@@ -274,14 +291,20 @@ export class Game {
     return !!this.gp && this.gp.raceIndex >= this.gp.trackIds.length - 1;
   }
 
-  /** [{ characterId, name, points, isPlayer }] sorted by points desc. */
+  /** [{ characterId, name, points, isPlayer, playerIndex }] sorted by points desc (humans first on ties). */
   getGpStandings() {
     if (!this.gp) return [];
-    const playerId = this.raceConfig?.characterId;
+    const humans = new Map((this.raceConfig?.players ?? []).map((p) => [p.characterId, p.index]));
     const ids = new Set([...Object.keys(this.gp.points), ...(this.karts.map((k) => k.character.id))]);
     return [...ids]
-      .map((id) => ({ characterId: id, name: getCharacter(id).name, points: this.gp.points[id] ?? 0, isPlayer: id === playerId }))
-      .sort((a, b) => b.points - a.points || (a.isPlayer ? -1 : 1));
+      .map((id) => ({
+        characterId: id,
+        name: getCharacter(id).name,
+        points: this.gp.points[id] ?? 0,
+        isPlayer: humans.has(id),
+        playerIndex: humans.has(id) ? humans.get(id) : -1,
+      }))
+      .sort((a, b) => b.points - a.points || (a.isPlayer === b.isPlayer ? a.playerIndex - b.playerIndex : a.isPlayer ? -1 : 1));
   }
 
   quitToMenu() {
@@ -350,10 +373,21 @@ export class Game {
     const trackIds = TRACK_LIST.map((t) => t.id);
     const trackId = trackIds.includes(cfg.trackId) ? cfg.trackId : trackIds[0];
     const cc = CC_CLASSES[cfg.cc] ? Number(cfg.cc) : this.settings.cc;
-    const characterId = getCharacter(cfg.characterId).id;
-    const maxAi = MAX_KARTS - 1;
+    // ---- players: 1..MAX_PLAYERS humans, distinct characters ----
+    let reqPlayers = Array.isArray(cfg.players) && cfg.players.length ? cfg.players : [{ characterId: cfg.characterId, device: 'any' }];
+    reqPlayers = reqPlayers.slice(0, mode === 'timetrial' ? 1 : MAX_PLAYERS);
+    const used = new Set();
+    const players = reqPlayers.map((p, i) => {
+      let ch = getCharacter(p?.characterId);
+      if (used.has(ch.id)) ch = CHARACTERS.find((c) => !used.has(c.id)) ?? ch;
+      used.add(ch.id);
+      return { index: i, characterId: ch.id, device: typeof p?.device === 'string' && p.device ? p.device : 'any' };
+    });
+    const characterId = players[0].characterId;
+    const maxAi = MAX_KARTS - players.length;
     const aiCount = MODES[mode].ai ? (Number.isFinite(cfg.aiCount) ? Math.max(0, Math.min(maxAi, cfg.aiCount)) : maxAi) : 0;
     return {
+      players,
       mode,
       trackId,
       cupId: cfg.cupId ?? CUPS[0]?.id,
@@ -369,10 +403,11 @@ export class Game {
   }
 
   _spawnKarts(config) {
-    const playerChar = getCharacter(config.characterId);
-    const others = CHARACTERS.filter((c) => c.id !== playerChar.id).slice(0, config.aiCount);
-    // Grid order (slot 0 = pole): first race → player starts last; later GP races → by GP standings.
-    let roster = [...others, playerChar];
+    const humanChars = config.players.map((p) => getCharacter(p.characterId));
+    const humanIds = new Set(humanChars.map((c) => c.id));
+    const others = CHARACTERS.filter((c) => !humanIds.has(c.id)).slice(0, config.aiCount);
+    // Grid order (slot 0 = pole): first race → humans start last (P1 last); later GP races → by GP standings.
+    let roster = [...others, ...[...humanChars].reverse()];
     if (this.gp && this.gp.raceIndex > 0) {
       const pts = this.gp.points;
       roster.sort((a, b) => (pts[b.id] ?? 0) - (pts[a.id] ?? 0));
@@ -382,28 +417,86 @@ export class Game {
     // two "rival" CPUs are sharper than the rest
     const rivalIds = new Set(others.slice(0, 2).map((c) => c.id));
     const grid = this.track.startGrid;
+    const playerCount = config.players.length;
 
     roster.forEach((character, slot) => {
-      const isPlayer = character.id === playerChar.id;
+      const pi = humanChars.findIndex((c) => c.id === character.id);
+      const isPlayer = pi >= 0;
       const kart = new Kart(this, { id: slot, character, isPlayer });
-      kart.model = new KartModel(character, { isPlayer, quality: this.settings.quality });
+      kart.playerIndex = isPlayer ? pi : -1;
+      kart.model = new KartModel(character, { isPlayer, quality: this.settings.quality, playerIndex: kart.playerIndex, playerCount });
       this.scene.add(kart.model.root);
       kart.resetForRace(grid[Math.min(slot, grid.length - 1)]);
       kart.controlLocked = true;
       if (isPlayer && !this.debug.autodrive) {
-        kart.controller = new PlayerController(this, kart);
+        const device = config.players[pi].device;
+        kart.controller = new PlayerController(this, kart, this.input.getSource?.(device) ?? this.input);
       } else {
         const skill = isPlayer ? 0.9 : Math.max(0.05, Math.min(1, baseSkill + (rivalIds.has(character.id) ? 0.08 : -0.04 - rng() * 0.12)));
         kart.controller = new AIController(this, kart, { skill, autopilot: isPlayer });
       }
       this.karts.push(kart);
-      if (isPlayer) this.player = kart;
     });
+    this.players = humanChars.map((c) => this.karts.find((k) => k.character.id === c.id));
+    this.player = this.players[0] ?? null;
+  }
+
+  /** Normalized viewport rects (origin top-left) for a layout. */
+  static layoutRects(n) {
+    if (n <= 1) return { layout: 'single', rects: [{ x: 0, y: 0, w: 1, h: 1 }], overview: null };
+    if (n === 2) return { layout: 'h2', rects: [{ x: 0, y: 0, w: 1, h: 0.5 }, { x: 0, y: 0.5, w: 1, h: 0.5 }], overview: null };
+    const q = [{ x: 0, y: 0, w: 0.5, h: 0.5 }, { x: 0.5, y: 0, w: 0.5, h: 0.5 }, { x: 0, y: 0.5, w: 0.5, h: 0.5 }, { x: 0.5, y: 0.5, w: 0.5, h: 0.5 }];
+    return { layout: 'quad', rects: q.slice(0, n), overview: n === 3 ? { ...q[3] } : null };
+  }
+
+  /** Build one View (camera + CameraController + rect) per human. views[0] reuses game.camera/cameraController. */
+  _buildViews(config) {
+    const { layout, rects, overview } = Game.layoutRects(this.players.length);
+    this.layout = layout;
+    this.overviewRect = overview;
+    this.views = this.players.map((kart, i) => {
+      let camera = this.camera;
+      let cameraController = this.cameraController;
+      if (i > 0) {
+        camera = new THREE.PerspectiveCamera(70, 1, 0.1, 5000);
+        this.scene.add(camera);
+        cameraController = new CameraController(this, { camera });
+        if (cameraController.camera !== camera) cameraController.camera = camera; // pre-`{ camera }` fallback
+      }
+      return { index: i, kart, camera, cameraController, rect: rects[i], color: PLAYER_COLORS[i] };
+    });
+    this.isSplit = this.views.length > 1;
+    this._updateViewAspects();
+  }
+
+  _updateViewAspects() {
+    const W = window.innerWidth, H = window.innerHeight;
+    for (const v of this.views) {
+      v.camera.aspect = (v.rect.w * W) / Math.max(1, v.rect.h * H);
+      v.camera.updateProjectionMatrix();
+    }
   }
 
   _teardownRace() {
     if (!this.track && this.karts.length === 0) return;
     events.emit(EVT.RACE_TEARDOWN, {});
+    const hadViews = this.views.length > 0;
+    for (const v of this.views) {
+      if (v.cameraController === this.cameraController) continue;
+      try {
+        v.cameraController.teardownRace?.();
+        v.cameraController.dispose?.();
+      } catch (e) {
+        console.error('[Game] extra camera teardown failed', e);
+      }
+      this.scene.remove(v.camera);
+    }
+    this.views = [];
+    this.players = [];
+    this.layout = 'single';
+    this.overviewRect = null;
+    this.isSplit = false;
+    if (hadViews) events.emit(EVT.VIEWS_CHANGED, { views: [], layout: 'single', overviewRect: null });
     for (const sys of this._raceSystems) {
       try {
         sys.teardownRace?.();
@@ -468,6 +561,7 @@ export class Game {
     this.renderer.setSize(w, h);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
+    if (this.views.length) this._updateViewAspects();
     this.postfx.setSize?.(w, h);
     this.showroom.resize?.(w, h);
   }
@@ -493,6 +587,7 @@ export class Game {
       cc: num('cc', undefined),
       laps: num('laps', undefined),
       ai: num('ai', undefined),
+      players: this._parsePlayersParam(p),
       autodrive: flag('autodrive'),
       skipIntro: flag('skipintro'),
       noCountdown: flag('nocountdown'),
@@ -502,6 +597,21 @@ export class Game {
       quality: ['low', 'medium', 'high'].includes(p.get('quality')) ? p.get('quality') : undefined,
       timeScale: Math.max(0.05, Math.min(8, num('timescale', 1))),
     };
+  }
+
+  /** URL: players=1..4, pchars=a,b,.., pdev=kb1,kb2,.. → [{ characterId, device }] or undefined (only meaningful with quick=1). */
+  _parsePlayersParam(p) {
+    const n = Math.max(1, Math.min(MAX_PLAYERS, Math.floor(Number(p.get('players')) || 1)));
+    if (n <= 1 && !p.has('pdev') && !p.has('pchars')) return undefined;
+    const chars = (p.get('pchars') || p.get('char') || '').split(',').filter(Boolean);
+    const devs = (p.get('pdev') || '').split(',').filter(Boolean);
+    const defDev = ['kb1', 'kb2', 'pad0', 'pad1'];
+    const used = new Set(chars);
+    const free = CHARACTERS.map((c) => c.id).filter((id) => !used.has(id));
+    return Array.from({ length: n }, (_, i) => ({
+      characterId: chars[i] ?? free.shift() ?? CHARACTERS[i].id,
+      device: devs[i] ?? (n > 1 ? defDev[i] : 'any'),
+    }));
   }
 
   _updateDebug(dt) {

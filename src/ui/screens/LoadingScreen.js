@@ -60,7 +60,8 @@ export class LoadingScreen extends Screen {
     const cfg = config ?? g.raceConfig ?? {};
     const track = g.trackList.find((t) => t.id === cfg.trackId) ?? g.trackList[0];
     const modeLabel = cfg.mode === 'gp' ? `Grand Prix${gp ? ` • Race ${gp.raceIndex + 1} of ${gp.trackIds.length}` : ''}` : cfg.mode === 'timetrial' ? 'Time Trial' : 'Quick Race';
-    this.tag.textContent = modeLabel;
+    const np = cfg.players?.length ?? 1;
+    this.tag.textContent = np > 1 ? `${modeLabel} \u2022 ${np} Players` : modeLabel;
     this.name.textContent = track.name.toUpperCase();
     this.name.dataset.text = track.name.toUpperCase();
     this.name.style.setProperty('--g', `linear-gradient(#fff, ${track.colors.primary} 70%)`);

@@ -4,6 +4,12 @@
  */
 export const GAME_TITLE = 'KART BLITZ';
 export const MAX_KARTS = 8;
+/** Local split-screen: up to 4 human players on one screen (see docs/SPLITSCREEN.md). */
+export const MAX_PLAYERS = 4;
+/** Player identity colours (P1..P4) used by HUD tags, kart markers, minimap arrows and results. */
+export const PLAYER_COLORS = ['#ff4d5e', '#3fa9ff', '#ffd23f', '#4cd964'];
+/** Input device ids: 'any' = merged keyboard+all pads (single player); kb1 = WASD side, kb2 = arrows side, padN = Gamepad.index N. */
+export const INPUT_DEVICES = ['kb1', 'kb2', 'pad0', 'pad1', 'pad2', 'pad3'];
 export const DEFAULT_LAPS = 3;
 
 /** Seconds of camera flyover before the countdown. The camera 'intro' mode must fill exactly this. */

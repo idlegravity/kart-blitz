@@ -7,6 +7,8 @@ import { Nav } from '../nav.js';
 import { h } from '../dom.js';
 import { uiIcon, trophySvg } from '../icons.js';
 import { getCharacter } from '../../data/characters.js';
+import { playerColor, playerTag } from '../split.js';
+import { ordinal } from '../../core/math.js';
 
 const TIERS = [
   { tier: 'gold', head: 'CHAMPION!', sub: (cup) => `You won the ${cup}!`, g: 'linear-gradient(#fff7c2, #ffd23f 50%, #ff8a1f)' },
@@ -27,6 +29,7 @@ export class TrophyScreen extends Screen {
     this.trophy = h('div.tro__trophy');
     this.headEl = h('div.tro__head.fx.fx--big', { 'data-text': '' });
     this.subEl = h('div.tro__sub');
+    this.humansEl = h('div.tro__humans');
     this.rays = h('div.tro__rays');
     this.list = h('div.tro__list.panel.a-left');
     this.confetti = h('div.res__confetti');
@@ -36,7 +39,7 @@ export class TrophyScreen extends Screen {
       h('div.btn__arrow', { html: uiIcon('chevron') }));
     this.root.append(
       this.rays, this.confetti,
-      h('div.tro__top', h('div.tro__hero', this.trophy, h('div.tro__text', this.cupPill, this.headEl, this.subEl))),
+      h('div.tro__top', h('div.tro__hero', this.trophy, h('div.tro__text', this.cupPill, this.headEl, this.subEl, this.humansEl))),
       this.list,
       h('div.tro__cta', this.btn));
     this.nav = new Nav(this.ui, { layout: 'list' });
@@ -51,9 +54,12 @@ export class TrophyScreen extends Screen {
     const g = this.game;
     const standings = params.standings?.length ? params.standings : g.getGpStandings();
     const cup = params.cupName ?? g.gp?.cupName ?? 'Nitro Cup';
-    const playerId = g.raceConfig?.characterId;
-    let idx = standings.findIndex((s) => s.isPlayer || s.characterId === playerId);
-    if (idx < 0) idx = standings.length;
+    const cfgPlayers = g.raceConfig?.players?.length ? g.raceConfig.players : [{ characterId: g.raceConfig?.characterId }];
+    const piOf = (s) => (Number.isInteger(s.playerIndex) && s.playerIndex >= 0 ? s.playerIndex : Math.max(0, cfgPlayers.findIndex((p) => p.characterId === s.characterId)));
+    const isHuman = (s) => s.isPlayer || cfgPlayers.some((p) => p.characterId === s.characterId);
+    const humans = standings.map((s, i) => ({ s, i, pi: piOf(s) })).filter((x) => isHuman(x.s));
+    const multi = humans.length > 1;
+    let idx = humans.length ? humans[0].i : standings.length; // trophy tier: the best human
     const place = idx + 1;
     const t = TIERS[idx] ?? PARTICIPATION;
     const top3 = standings.slice(0, 3).map((s) => s.characterId);
@@ -64,7 +70,16 @@ export class TrophyScreen extends Screen {
     this.headEl.textContent = t.head;
     this.headEl.dataset.text = t.head;
     this.headEl.style.setProperty('--g', t.g);
-    this.subEl.textContent = t.sub(cup, place);
+    if (multi) {
+      const best = humans[0];
+      const tag = playerTag(best.pi);
+      const sub = idx === 0 ? `${tag} won the ${cup}!` : idx === 1 ? `${tag} took second in the ${cup}.` : idx === 2 ? `${tag} made the podium in the ${cup}.` : `${tag} led the humans in the ${cup}.`;
+      this.subEl.textContent = sub;
+    } else this.subEl.textContent = t.sub(cup, place);
+    this.humansEl.textContent = '';
+    if (multi) {
+      for (const x of humans) this.humansEl.append(h('span.tro__hc', { style: { '--pc': playerColor(x.pi) } }, h('span.ptag', playerTag(x.pi)), ordinal(x.i + 1)));
+    }
     this.root.dataset.tier = t.tier;
 
     this.list.textContent = '';
@@ -73,10 +88,12 @@ export class TrophyScreen extends Screen {
       const c = getCharacter(s.characterId);
       const img = h('img', { alt: '', draggable: 'false' });
       img.src = this.ui.portrait(s.characterId, 128);
-      this.list.append(h(`div.tro__row.a-left${s.isPlayer || s.characterId === playerId ? '.is-player' : ''}`, { style: { '--i': i + 2, '--c': c.colors.primary } },
+      const hu = isHuman(s);
+      const pi = hu ? piOf(s) : -1;
+      this.list.append(h(`div.tro__row.a-left${hu ? '.is-player' : ''}${hu && multi ? '.is-human' : ''}`, { style: { '--i': i + 2, '--c': c.colors.primary, '--pc': pi >= 0 ? playerColor(pi) : 'transparent' } },
         h('span.tro__n', i < 3 ? h(`span.medal.medal--${i + 1}`, String(i + 1)) : h('span.pnum', String(i + 1))),
         h('span.tro__p', img),
-        h('span.tro__name', c.name),
+        h('span.tro__name', c.name, hu && multi ? h('span.ptag', playerTag(pi)) : null),
         h('span.tro__pts', `${s.points}`, h('small', 'pts'))));
     });
     this._confetti(place);

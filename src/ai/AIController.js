@@ -815,9 +815,18 @@ export class AIController {
   // ==================================================================================================
   _rubberBand(dt) {
     const k = this.kart, game = this.game, T = AI_TUNE;
-    const player = game.player;
+    // rubber-band against the LEADING human that has not finished yet (split-screen: game.players)
+    let player = null;
+    const humans = game.players?.length ? game.players : (game.player ? [game.player] : null);
+    if (humans) {
+      for (let i = 0; i < humans.length; i++) {
+        const h = humans[i];
+        if (h === k || h.finished) continue;
+        if (!player || h.progress > player.progress) player = h;
+      }
+    }
     let target = 1;
-    if (!this.autopilot && player && player !== k && !player.finished && game.race.hasStarted) {
+    if (!this.autopilot && player && game.race.hasStarted) {
       const cc = game.raceConfig?.cc ?? 150;
       const up = T.rubber.up[cc] ?? 1.08, down = T.rubber.down[cc] ?? 0.93;
       const gap = k.progress - player.progress; // + = we are ahead of the player

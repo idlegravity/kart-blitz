@@ -11,7 +11,7 @@
  *
  * Kart fields written here: lap, progress, place, finished, finishTime, lapTimes, wrongWay.
  *
- * RaceResult: { kart, characterId, name, isPlayer, place, time, lapTimes, bestLap, estimated, points, totalPoints }
+ * RaceResult: { kart, characterId, name, isPlayer, playerIndex (-1 = CPU), place, time, lapTimes, bestLap, estimated, points, totalPoints }
  */
 import { EVT } from '../core/events.js';
 import { INTRO_DURATION, COUNTDOWN_STEP, FINISH_TIMEOUT, DEFAULT_LAPS } from '../core/constants.js';
@@ -37,6 +37,8 @@ export class RaceManager {
     this.track = null;
     this.karts = [];
     this.player = null;
+    /** Human karts (split-screen: 1..4). */
+    this.humans = [];
     this.config = null;
     /** Karts sorted by current place (index 0 = leader). */
     this.standings = [];
@@ -47,11 +49,12 @@ export class RaceManager {
   }
 
   /** Called by Game after the track is built and karts are placed on the grid (kart.trackS valid). */
-  setup({ track, karts, player, config }) {
+  setup({ track, karts, player, players, config }) {
     this.reset();
     this.track = track;
     this.karts = karts;
     this.player = player;
+    this.humans = players?.length ? [...players] : karts.filter((k) => k.isPlayer);
     this.config = config;
     this.laps = config.laps ?? track.laps ?? DEFAULT_LAPS;
     for (const k of karts) this._initKart(k);
@@ -225,7 +228,8 @@ export class RaceManager {
     this.finishOrder.sort((a, b) => a.finishTime - b.finishTime);
     this._updatePlaces(false);
     this.game.events.emit(EVT.RACE_FINISH, { kart: k, place: k.place, time: k.finishTime });
-    if (k === this.player && this.phase === 'racing') {
+    // 'finished' begins once ALL humans are across the line; the CPU timeout clock starts then.
+    if (k.isPlayer && this.phase === 'racing' && this.humans.every((h) => h.finished)) {
       this.playerFinishTime = this.time;
       this._setPhase('finished');
     }
@@ -269,6 +273,7 @@ export class RaceManager {
         characterId: k.character.id,
         name: k.character.name,
         isPlayer: k.isPlayer,
+        playerIndex: k.isPlayer ? (k.playerIndex ?? 0) : -1,
         place: k.place,
         time: k.finishTime,
         lapTimes: laps,
@@ -278,7 +283,7 @@ export class RaceManager {
         totalPoints: 0,
       };
     });
-    if (this.config.mode === 'timetrial' && this.player) this.record = this._saveRecord(results.find((r) => r.isPlayer));
+    if (this.config.mode === 'timetrial' && this.humans.length === 1 && this.player) this.record = this._saveRecord(results.find((r) => r.isPlayer));
     this.game._applyGpPoints?.(results);
     this.results = results;
     this._setPhase('results');

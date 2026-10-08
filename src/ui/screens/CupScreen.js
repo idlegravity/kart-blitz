@@ -102,6 +102,6 @@ export class CupScreen extends Screen {
   }
 
   onBack() {
-    this.ui.goto('character');
+    this.ui.goto(this.ui.racerScreen, { keep: true });
   }
 }

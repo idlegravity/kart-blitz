@@ -320,6 +320,14 @@ export class Track {
       const c = game?.camera?.position;
       if (c) this._sunFocus.copy(c);
     }
+    this._placeSun(this._sunFocus, this._hasFocus, true);
+    // chunk culling / animators
+    for (const s of this.scatters) s.update?.(this._sunFocus);
+    for (const a of this.animators) a(dt, this.matTime.value, this._sunFocus);
+  }
+
+  /** Move the sun + shadow camera around `focus` (texel-snapped, biased ahead along the track). */
+  _placeSun(focus, hasFocus, useHint) {
     // shadow camera follows the focus, texel-snapped in light space to avoid shimmering
     const dir = this.sunDirection;
     const z = _v.copy(dir);
@@ -329,10 +337,10 @@ export class Track {
     const texel = (half * 2) / (this.sun.shadow.mapSize.x || 2048);
     // bias the shadow box ahead of the kart (along the track) so shadows are present where the camera looks
     const f = this._shFocus ?? (this._shFocus = new THREE.Vector3());
-    f.copy(this._sunFocus);
-    if (this._hasFocus) {
-      this._shHint = this._nearest(f.x, f.y, f.z, this._shHint ?? -1);
-      const ti = this._shHint;
+    f.copy(focus);
+    if (hasFocus) {
+      const ti = this._nearest(f.x, f.y, f.z, useHint ? (this._shHint ?? -1) : -1);
+      if (useHint) this._shHint = ti;
       const cl = this.cl;
       f.x += cl.hx[ti] * 24;
       f.z += cl.hz[ti] * 24;
@@ -344,9 +352,15 @@ export class Track {
     this.sun.target.position.set(sx, sy, sz);
     this.sun.position.set(sx + dir.x * 170, sy + dir.y * 170, sz + dir.z * 170);
     this.sun.target.updateMatrixWorld();
-    // chunk culling / animators
-    for (const s of this.scatters) s.update?.(this._sunFocus);
-    for (const a of this.animators) a(dt, this.matTime.value, this._sunFocus);
+  }
+
+  /**
+   * Split-screen hook: re-aim the sun/shadow camera at `position` exactly like update() does, without
+   * animating anything. PostFX calls this before rendering each view.
+   */
+  setShadowFocus(position) {
+    if (!this.built || !position) return;
+    this._placeSun(position, true, false);
   }
 
   // ------------------------------------------------------------------------------ dispose

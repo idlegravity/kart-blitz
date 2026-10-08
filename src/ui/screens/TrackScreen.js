@@ -62,7 +62,7 @@ export class TrackScreen extends Screen {
 
   onShow() {
     const f = this.ui.flow;
-    this.tagEl.textContent = f.mode === 'timetrial' ? 'Time Trial' : `Quick Race • ${f.cc}cc`;
+    this.tagEl.textContent = f.mode === 'timetrial' ? 'Time Trial' : `Quick Race • ${f.cc}cc${f.players > 1 ? ` • ${f.players} Players` : ''}`;
     this.records = RaceManager.getRecords?.() ?? {};
     // refresh card record lines
     this.game.trackList.forEach((t, i) => {
@@ -96,7 +96,7 @@ export class TrackScreen extends Screen {
         ? `<div class="rec"><span>Best time</span><b>${fmtTime(r.bestTotal)}</b></div><div class="rec"><span>Best lap</span><b>${fmtTime(r.bestLap)}</b></div>`
         : '<div class="rec rec--none">No record yet — set the first one!</div>';
     } else {
-      this.dRec.innerHTML = `<div class="rec"><span>Laps</span><b>3</b></div><div class="rec"><span>Rivals</span><b>7</b></div>`;
+      this.dRec.innerHTML = `<div class="rec"><span>Laps</span><b>3</b></div><div class="rec"><span>Rivals</span><b>${8 - (f.players ?? 1)}</b></div>`;
     }
   }
 
@@ -106,6 +106,6 @@ export class TrackScreen extends Screen {
   }
 
   onBack() {
-    this.ui.goto('character');
+    this.ui.goto(this.ui.racerScreen, { keep: true });
   }
 }

@@ -40,6 +40,23 @@ Click the page once (or press a key) to enable sound. Browsers require a user ge
 | Pause | Esc / P | Start |
 | Menus | Arrows + Enter, Esc/Backspace = back, mouse | D-pad/stick + A, B = back |
 
+### Split-screen (2–4 players)
+
+Quick Race and Grand Prix support up to **4 local players** (Time Trial is solo). Pick the number of players in the
+menu; each player joins with their own device and picks a racer. CPUs fill the grid up to 8 karts.
+2P = top/bottom halves, 3P = 2x2 with a shared overview/minimap panel in the free quadrant, 4P = 2x2.
+
+| | Keyboard 1 (left half) | Keyboard 2 (right half) | Gamepads |
+|---|---|---|---|
+| Accelerate / brake | W / S | ↑ / ↓ | A / B |
+| Steer | A / D | ← / → | Left stick / D-pad |
+| Hop / drift | Space or Left Shift | Right Shift or . | RB / RT |
+| Use item | E or Left Ctrl | / or Right Ctrl or Enter | LB / X |
+| Look back | Q | , | Y |
+
+Up to four gamepads can be used at once (one per player). Esc / P / Start pauses for everyone.
+Debug URL: `/?quick=1&players=3&pchars=blaze,bolt,mochi&pdev=kb1,kb2,pad0&skipintro=1`. See `docs/SPLITSCREEN.md`.
+
 ### Driving tips
 * **Drift:** hold drift while steering into a corner. Sparks go **blue → orange → purple** as the drift charges.
   Release for a mini-turbo. Steer *into* the turn to charge faster.
@@ -108,7 +125,7 @@ node scripts/snap.mjs "/?quick=1&track=neon&skipintro=1&autodrive=1" --wait=6000
 URL parameters for quick testing: `quick=1` (skip menus), `mode=quick|gp|timetrial`,
 `track=meadow|canyon|glacier|neon`, `char=blaze|bolt|mochi|rex|frost|nova|grizz|pepper`, `cc=50|100|150|200`,
 `laps=N`, `ai=0..7`, `autodrive=1` (the CPU drives your kart), `skipintro=1`, `nocountdown=1`,
-`debug=1` (fps/draw calls/kart state), `mute=1`, `quality=low|medium|high`, `timescale=0.05..8`.
+`players=1..4`, `pchars=a,b,..`, `pdev=kb1,kb2,pad0,..` (split-screen), `debug=1` (fps/draw calls/kart state), `mute=1`, `quality=low|medium|high`, `timescale=0.05..8`.
 The live game instance is `window.__game`.
 
 ## Tech notes

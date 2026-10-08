@@ -1,8 +1,9 @@
 /**
- * PlayerController — copies the merged keyboard/gamepad state into kart.input every frame.
- * OWNER: Driving agent. Contract: new PlayerController(game, kart); update(dt); dispose().
+ * PlayerController — copies an InputSource's state into kart.input every frame.
+ * OWNER: Driving agent. Contract: new PlayerController(game, kart, source = game.input); update(dt); dispose().
+ * `controller.source` is the InputSource driving the kart (also used to route rumble to the kart's own pad).
  *
- * InputManager reports `drift` / `item` as true for the frame of a latched tap (down+up between two frames),
+ * Sources report `drift` / `item` as true for the frame of a latched tap (down+up between two frames),
  * so even a very quick hop tap or item tap arrives here as a one-frame press and is seen by the kart's /
  * ItemSystem's edge detection.
  */
@@ -10,14 +11,16 @@ export class PlayerController {
   /**
    * @param {import('../Game.js').Game} game
    * @param {import('../kart/Kart.js').Kart} kart
+   * @param {import('./InputSource.js').InputSource} [source] defaults to the merged game.input ('any')
    */
-  constructor(game, kart) {
+  constructor(game, kart, source = null) {
     this.game = game;
     this.kart = kart;
+    this.source = source ?? game.input;
   }
 
   update() {
-    const i = this.game.input;
+    const i = this.source;
     const k = this.kart.input;
     k.throttle = i.throttle;
     k.brake = i.brake;

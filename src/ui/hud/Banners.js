@@ -106,7 +106,8 @@ export class Banners {
   showIntro({ track, config, gp }, { delay = 0 } = {}) {
     const mode = config?.mode;
     const tag = mode === 'gp' && gp ? `Grand Prix • Race ${gp.raceIndex + 1} of ${gp.trackIds.length}` : mode === 'timetrial' ? 'Time Trial' : 'Quick Race';
-    this.introTag.textContent = tag;
+    const np = config?.players?.length ?? 1;
+    this.introTag.textContent = np > 1 ? `${tag} \u2022 ${np} Players` : tag;
     const name = (track?.name ?? '').toUpperCase();
     this.introName.textContent = name;
     this.introName.dataset.text = name;

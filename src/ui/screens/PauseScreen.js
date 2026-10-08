@@ -65,7 +65,8 @@ export class PauseScreen extends Screen {
     const g = this.game;
     const t = g.track?.name ?? '';
     const p = g.player;
-    this.sub.textContent = `${t}${p && g.race ? ` • Lap ${Math.min(p.lap, g.race.laps)}/${g.race.laps}` : ''}`;
+    const np = g.views?.length ?? 1;
+    this.sub.textContent = np > 1 ? `${t} \u2022 ${np} players` : `${t}${p && g.race ? ` • Lap ${Math.min(p.lap, g.race.laps)}/${g.race.laps}` : ''}`;
     if (!wasActive) this._setView('menu', params?.focus ?? 0);
     else this.nav.focus(params?.focus ?? 0, { silent: true, force: true });
   }

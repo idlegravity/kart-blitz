@@ -413,3 +413,23 @@ All original contracts above hold. Notable additions (details in each module's h
 * **Game** — dynamic resolution (`_adaptResolution`), `_clearPause()` emits `GAME_PAUSE` when a race start/quit
   clears a pause.
 * **Tooling** — `npm run smoke [-- --dist]` end-to-end suite; `snap.mjs --dpr=2` for Retina-resolution tests.
+
+---
+
+## 13. Split-screen (local multiplayer, 2–4 humans)
+
+Full contract: **`docs/SPLITSCREEN.md`** (wins over this document for split-screen behaviour). Summary of what Core provides:
+
+* `startRace({ players: [{ characterId, device }] })` — 1..4 humans (`MAX_PLAYERS`), normalized into `raceConfig.players`
+  (`{ index, characterId, device }`); distinct characters; time trial = 1 player; `aiCount ≤ MAX_KARTS - players`.
+* `game.players` (human karts, player order), `game.player === players[0]`, `kart.playerIndex` (−1 for CPUs),
+  `game.views[]` (`{ index, kart, camera, cameraController, rect, color }`), `game.layout` (`'single'|'h2'|'quad'`),
+  `game.overviewRect` (3P only), `game.isSplit`. Rects are normalized with a top-left origin.
+* `EVT.VIEWS_CHANGED { views, layout, overviewRect }` after views are built and (empty) on teardown.
+  `RACE_SETUP`/`setupRace` ctx also carry `players` and `views`.
+* Frame loop: every view's `cameraController.update`, then `postfx.renderViews(scene, views, sdt)` when there is
+  more than one view (fallback: `postfx.render` for `views[0]`). `track.setShadowFocus(position)` re-aims the sun/shadow
+  camera per view.
+* RaceManager: phase `'finished'` starts when all humans have crossed the line; results/standings rows carry
+  `playerIndex`; `getGpStandings()` marks every human and sorts humans first on ties.
+* Debug URL: `players=1..4&pchars=a,b&pdev=kb1,kb2,pad0,pad1` (with `quick=1`). Smoke: `split:2|3|4`, `perf:split2|split4`.

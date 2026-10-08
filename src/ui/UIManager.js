@@ -23,9 +23,12 @@ import { CHARACTERS } from '../data/characters.js';
 import { getPortrait } from '../visuals/portraits.js';
 import { h } from './dom.js';
 import { DEFS_SVG, actionGlyph } from './icons.js';
+import { MAX_PLAYERS } from './split.js';
 import { Hud } from './hud/Hud.js';
 import { TitleScreen } from './screens/TitleScreen.js';
 import { MainMenuScreen } from './screens/MainMenuScreen.js';
+import { PlayersScreen } from './screens/PlayersScreen.js';
+import { LobbyScreen } from './screens/LobbyScreen.js';
 import { CcScreen } from './screens/CcScreen.js';
 import { CharacterScreen } from './screens/CharacterScreen.js';
 import { CupScreen } from './screens/CupScreen.js';
@@ -43,6 +46,8 @@ const PREFS_KEY = 'kartblitz.ui.v1';
 const SCREEN_CLASSES = {
   title: TitleScreen,
   main: MainMenuScreen,
+  players: PlayersScreen,
+  lobby: LobbyScreen,
   cc: CcScreen,
   character: CharacterScreen,
   cup: CupScreen,
@@ -146,6 +151,10 @@ export class UIManager {
       trackId: prefs.trackId ?? 'meadow',
       cupId: prefs.cupId ?? 'nitro',
       cc: game.settings?.cc ?? 150,
+      /** Local players (1..4). 2+ goes through the join lobby. */
+      players: Math.max(1, Math.min(MAX_PLAYERS, prefs.players | 0 || 1)),
+      /** Players committed by the lobby: [{ characterId, device }] (null for a single player). */
+      slots: null,
     };
 
     this.hud = new Hud(this);
@@ -156,7 +165,7 @@ export class UIManager {
     on(EVT.GAME_PAUSE, (p) => this._onPause(p));
     on(EVT.RACE_RESULTS, (p) => this._onResults(p));
     on(EVT.RACE_FINISH, ({ kart }) => {
-      if (kart?.isPlayer) this._playerFinishAt = this._time;
+      if (kart?.isPlayer) this._playerFinishAt = this._time; // split-screen: the LAST human to finish wins this
     });
     on(EVT.GP_COMPLETE, (p) => this._onGpComplete(p));
 
@@ -348,7 +357,7 @@ export class UIManager {
   savePrefs() {
     const f = this.flow;
     try {
-      localStorage.setItem(PREFS_KEY, JSON.stringify({ mode: f.mode, characterId: f.characterId, trackId: f.trackId, cupId: f.cupId }));
+      localStorage.setItem(PREFS_KEY, JSON.stringify({ mode: f.mode, characterId: f.characterId, trackId: f.trackId, cupId: f.cupId, players: f.players }));
     } catch {
       /* storage unavailable */
     }
@@ -366,6 +375,11 @@ export class UIManager {
   startFromFlow() {
     const f = this.flow;
     const cfg = { mode: f.mode, characterId: f.characterId, cc: f.mode === 'timetrial' ? 150 : f.cc };
+    const n = f.mode === 'timetrial' ? 1 : f.players;
+    if (n > 1 && f.slots?.length >= n) {
+      cfg.players = f.slots.slice(0, n).map((p) => ({ characterId: p.characterId, device: p.device }));
+      cfg.characterId = cfg.players[0].characterId;
+    } else cfg.players = [{ characterId: f.characterId, device: 'any' }];
     if (f.mode === 'gp') cfg.cupId = f.cupId;
     else cfg.trackId = f.trackId;
     this.savePrefs();
@@ -465,8 +479,35 @@ export class UIManager {
     return null;
   }
 
+  /** True while several humans share the menus / the race (split-screen). */
+  get multi() {
+    const g = this.game;
+    if (g.state === 'race') return (g.views?.length ?? 0) > 1;
+    return (this.flow.players ?? 1) > 1 && this.flow.mode !== 'timetrial';
+  }
+
+  /** Screen to go back to from cup / track select (the lobby when several players picked racers). */
+  get racerScreen() {
+    return this.flow.players > 1 && this.flow.mode !== 'timetrial' ? 'lobby' : 'character';
+  }
+
+  /**
+   * The input source that drives the menus: P1's own device on the shared steps after the lobby
+   * (cup / track), otherwise the merged keyboard + pads.
+   */
+  _menuSource() {
+    const inp = this.game.input;
+    const f = this.flow;
+    if (this.game.state === 'menu' && !this.overlay?.active && f.players > 1 && f.mode !== 'timetrial' && f.slots?.[0]?.device && (this.currentName === 'cup' || this.currentName === 'track')) {
+      return inp.getSource?.(f.slots[0].device) ?? inp;
+    }
+    return inp;
+  }
+
   _pollDevice() {
-    const dev = this.game.input?.lastDevice === 'gamepad' ? 'gamepad' : 'keyboard';
+    let dev = this.game.input?.lastDevice === 'gamepad' ? 'gamepad' : 'keyboard';
+    const src = this._menuSource();
+    if (src && src.id && src.id !== 'any') dev = src.id.startsWith('pad') ? 'gamepad' : src.id; // 'kb1' | 'kb2' | 'gamepad'
     if (dev !== this._device) {
       this._device = dev;
       this.hintBar.setDevice(dev);
@@ -488,11 +529,16 @@ export class UIManager {
     if (!inp) return;
     const owner = this._owner();
     if (!owner) return;
+    if (owner.rawInput) return; // e.g. the join lobby reads every device itself
     if (this._time < this._inputLock) return; // ignore the key press that opened an overlay
+    const src = this._menuSource();
+    // split-screen overlays (pause / results): every human can drive them with their own keys / pad
+    const all = this.multi && owner === this.overlay && inp.getSource && inp.devices ? inp.devices().map((d) => inp.getSource(d)) : null;
+    const edge = (a) => src.pressed(a) || (all && all.some((s) => s.pressed(a)));
     // navigation uses the InputManager's edge + auto-repeat (0.4 s delay, then every ~0.1 s); the rest are single presses
-    const nav = inp.repeated ? (a) => inp.repeated(a) : (a) => inp.pressed(a);
+    const nav = (a) => (src.repeated ? src.repeated(a) : src.pressed(a)) || (all && all.some((s) => s.repeated?.(a)));
     for (const a of ['up', 'down', 'left', 'right']) if (nav(a)) this._dispatch(owner, a);
-    for (const a of ['confirm', 'back']) if (inp.pressed(a)) this._dispatch(owner, a);
+    for (const a of ['confirm', 'back']) if (edge(a)) this._dispatch(owner, a);
   }
 
   // ==================================================================================================

@@ -180,5 +180,47 @@ ok('repeated(): initial press + auto-repeat while held', reps >= 5 && reps <= 12
 key('keyup', 'ArrowDown');
 inp.update(1 / 60);
 
+// 10. split sources
+const kb1 = inp.getSource('kb1'), kb2 = inp.getSource('kb2');
+ok('getSource any === manager', inp.getSource('any') === inp && inp.getSource('nope') === inp);
+key('keydown', 'KeyW'); key('keydown', 'KeyD'); key('keydown', 'ArrowLeft');
+inp.update(1 / 60);
+ok('kb1 throttle+right only', kb1.throttle === 1 && kb1.steer === 1 && kb2.throttle === 0);
+ok('kb2 steer left only', kb2.steer === -1 && kb2.brake === 0);
+ok("pressedBy('throttle'/'left')", inp.pressedBy('up').join() === 'kb1' && inp.pressedBy('left').join() === 'kb2');
+key('keyup', 'KeyW'); key('keyup', 'KeyD'); key('keyup', 'ArrowLeft');
+// latched tap on kb2 item (Slash, not a merged-key) and kb1 drift
+key('keydown', 'Slash'); key('keyup', 'Slash'); key('keydown', 'Space'); key('keyup', 'Space');
+inp.update(1 / 60);
+ok('kb2 slash tap latched as item', kb2.item && kb2.pressed('item') && !kb1.item);
+ok('kb1 space tap latched as drift', kb1.drift && !kb2.drift);
+ok("Slash does not touch merged 'any' item", !inp.item);
+inp.update(1 / 60);
+ok('taps last one frame', !kb2.item && !kb1.drift);
+ok('devices() has kbs', inp.devices().join() === 'kb1,kb2');
+// pads by index
+let rumbled = [];
+const mkPad2 = (index, btn, ax = [0, 0]) => ({ index, connected: true, axes: ax, buttons: Array.from({ length: 16 }, (_, i) => ({ pressed: i === btn, value: i === btn ? 1 : 0 })), vibrationActuator: { playEffect: (t, o) => { rumbled.push(index); return Promise.resolve(); } } });
+pads = [null, mkPad2(1, 0, [0.9, 0])];
+inp.update(1 / 60);
+const p0 = inp.getSource('pad0'), p1 = inp.getSource('pad1');
+ok('pad1 drives throttle/steer, pad0 absent', p1.connected && p1.throttle === 1 && p1.steer > 0.5 && !p0.connected && p0.throttle === 0);
+ok('devices() includes pad1 only', inp.devices().join() === 'kb1,kb2,pad1');
+ok("pressedBy('confirm') = pad1", inp.pressedBy('confirm').join() === 'pad1');
+p1.rumble(1, 1, 100); p0.rumble(1, 1, 100); kb1.rumble(1, 1, 100);
+ok('rumble only to own pad', rumbled.join() === '1');
+// kart routing
+rumbled = [];
+const kA = { isPlayer: true, controller: { source: p1 } }, kB = { isPlayer: true, controller: { source: kb1 } };
+game.players = [kA, kB];
+const t0 = performance.now(); while (performance.now() - t0 < 70);
+game.events.emit('kart:hit', { kart: kA });
+game.events.emit('kart:hit', { kart: kB });
+ok('KART_HIT rumbles the kart own pad only (kb kart none)', rumbled.join() === '1');
+pads = [];
+win.dispatch('gamepaddisconnected', {});
+inp.update(1 / 60);
+ok('pad1 unplug -> not connected', !p1.connected && p1.throttle === 0);
+
 console.log(fails === 0 ? '\nALL INPUT TESTS PASSED' : `\n${fails} FAILURES`);
 process.exit(fails ? 1 : 0);

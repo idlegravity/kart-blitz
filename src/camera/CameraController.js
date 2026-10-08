@@ -131,10 +131,17 @@ const _eul = new THREE.Euler();
 const _zAxis = new THREE.Vector3(0, 0, 1);
 
 export class CameraController {
-  /** @param {import('../Game.js').Game} game */
-  constructor(game) {
+  /**
+   * @param {import('../Game.js').Game} game
+   * @param {{ camera?: THREE.PerspectiveCamera }} [opts] camera to drive (default game.camera). Every instance is
+   *   fully independent (own state / target / shake; events only for its own target; dispose() removes listeners).
+   */
+  constructor(game, { camera } = {}) {
     this.game = game;
-    this.camera = game.camera;
+    this.camera = camera ?? game.camera;
+    this._poseFov = CAM.baseFov; // last pose FOV before viewport adaptation
+    this._wideT = 0; // 0..1 how far the viewport is past the "very wide" aspect (framing adaptation)
+    this._compactT = 0; // 0..1 how small the viewport is (quad)
     /** @type {import('../kart/Kart.js').Kart|null} */
     this.target = null;
     /** 'intro' | 'chase' | 'finish' | 'orbit' */
@@ -367,7 +374,7 @@ export class CameraController {
     this._blendDur = duration;
     this._blendT = 0;
     this._fromRoll = this._out.roll;
-    this._fromFov = cam.fov;
+    this._fromFov = this._poseFov;
     const k = this.target;
     // where the camera is looking: use the previous look target if we have one
     this._fromLook.copy(this._out.look);
@@ -538,7 +545,9 @@ export class CameraController {
     const rx = -fz, rz = fx; // right of the camera heading
     const yr = this._yRef.x;
     const d = this._dist.x;
-    out.pos.set(k.position.x - fx * d, yr + CAM.height, k.position.z - fz * d);
+    const fr = this._framing();
+    const dd = d * fr.dist;
+    out.pos.set(k.position.x - fx * dd, yr + CAM.height * fr.height, k.position.z - fz * dd);
     const ky = this._falling ? Math.max(k.position.y, yr - 5) : k.position.y; // (a falling kart may leave the frame)
     const kyLag = ky - yr; // how far the real kart is above the smoothed reference
     const ly = yr + CAM.lookUp + kyLag * 0.6;
@@ -551,7 +560,8 @@ export class CameraController {
     const h = this._heading.x;
     const fx = Math.sin(h), fz = Math.cos(h);
     const yr = this._yRef.x;
-    out.pos.set(k.position.x + fx * CAM.lookBackDistance, yr + CAM.lookBackHeight, k.position.z + fz * CAM.lookBackDistance);
+    const fr = this._framing();
+    out.pos.set(k.position.x + fx * CAM.lookBackDistance * fr.dist, yr + CAM.lookBackHeight * fr.height, k.position.z + fz * CAM.lookBackDistance * fr.dist);
     out.look.set(k.position.x - fx * 3, yr + 1, k.position.z - fz * 3);
     out.roll = 0;
     out.fov = CAM.baseFov + 2 + CAM.boostFov * 0.5 * clamp(k.boostPower, 0, 1.2);
@@ -627,6 +637,36 @@ export class CameraController {
     this._introLook.getPoint(u, out.look);
     out.roll = this._chase.roll * smoothstep(0.6, 1, t);
     out.fov = lerp(CAM.introFovStart, this._chase.fov, smoothstep(0, 1, Math.pow(t, 0.85)));
+  }
+
+  // ------------------------------------------------------------------------------------ viewport adaptation
+  /**
+   * Chase framing factors for the current viewport. Full-screen 16:9 .. 21:9 (and 1P in general) are untouched;
+   * only very wide views (2P halves ~3.5:1) and small views (quad) change.
+   */
+  _framing() {
+    const cam = this.camera;
+    const a = cam.aspect || 1.78;
+    // very wide: ramp in between aspect 2.45 (21:9 = untouched) and 3.5 (2P half at 16:9)
+    this._wideT = smoothstep(2.45, 3.5, a);
+    // small viewport (quad / 3P): measure the view this camera belongs to
+    let area = 1;
+    const views = this.game.views;
+    if (views && views.length > 1) {
+      for (const v of views) if (v.camera === cam && v.rect) { area = v.rect.w * v.rect.h; break; }
+    }
+    this._compactT = clamp01((0.5 - area) / 0.25);
+    const w = this._wideT, c = this._compactT;
+    return { dist: 1 - 0.12 * c + 0.04 * w, height: 1 + 0.22 * w - 0.06 * c };
+  }
+
+  /** Adapt the vertical FOV: keep a sensible horizontal FOV on very wide views, a bit tighter on small ones. */
+  _adaptFov(fov) {
+    const w = this._wideT, c = this._compactT;
+    if (w <= 0 && c <= 0) return fov;
+    const k = lerp(1, 0.62, w) * lerp(1, 0.93, c);
+    const half = Math.atan(Math.tan((fov * Math.PI) / 360) * k);
+    return (half * 360) / Math.PI;
   }
 
   // ------------------------------------------------------------------------------------ final placement
@@ -716,9 +756,11 @@ export class CameraController {
     }
     cam.position.copy(_v1);
 
-    // ---- FOV ----
-    if (Math.abs(cam.fov - pose.fov) > 0.004) {
-      cam.fov = pose.fov;
+    // ---- FOV (adapted to the viewport: narrower vertical FOV on very wide / small views) ----
+    this._poseFov = pose.fov;
+    const fov = this._adaptFov(pose.fov);
+    if (Math.abs(cam.fov - fov) > 0.004) {
+      cam.fov = fov;
       cam.updateProjectionMatrix();
     }
   }

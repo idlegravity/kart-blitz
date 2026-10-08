@@ -55,8 +55,9 @@ export class Effects {
     this.light.castShadow = false;
     this.lightI = 0;
     this._ks = new WeakMap();
+    this._camPos = [];
     this._lastExplode = { t: -9, p: new THREE.Vector3() };
-    this._fin = null; // finish-line confetti cannon that follows the winner
+    this._fins = []; // finish-line confetti cannons that follow each human who finishes
     this._bind();
   }
 
@@ -84,7 +85,7 @@ export class Effects {
     this.lightning.clear();
     this.light.intensity = 0;
     this.lightI = 0;
-    this._fin = null;
+    this._fins = [];
   }
 
   dispose() {
@@ -110,8 +111,8 @@ export class Effects {
     if (!this.active) return;
     const g = this.game;
     this.qscale = (QUALITY[g.settings?.quality] ?? QUALITY.high).particles;
-    const cam = g.camera.position;
-    for (const k of g.karts) if (k.model) this._emitKart(dt, k, cam);
+    const cams = this._cams();
+    for (const k of g.karts) if (k.model) this._emitKart(dt, k, cams);
     // pooled point light flash
     if (this.lightI > 0.5) {
       this.lightI *= Math.exp(-dt * 8.5);
@@ -126,15 +127,34 @@ export class Effects {
     this.skid.flush();
   }
 
-  /** After the player finishes: a few seconds of confetti raining down ahead of / around the kart. */
+  /** Positions of every view camera (split-screen) or just the main camera; LOD uses the nearest one. */
+  _cams() {
+    const g = this.game;
+    const out = this._camPos;
+    out.length = 0;
+    const views = g.views;
+    if (views && views.length > 1) for (const v of views) out.push(v.camera.position);
+    else out.push(g.camera.position);
+    return out;
+  }
+
+  /** Human karts (split-screen aware). */
+  _humans() {
+    const g = this.game;
+    return g.players?.length ? g.players : g.player ? [g.player] : [];
+  }
+
+  /** After a human finishes: a few seconds of confetti raining down ahead of / around the kart. */
   _finishCannon(dt) {
-    const f = this._fin;
-    if (!f) return;
-    f.t -= dt;
-    if (f.t <= 0) {
-      this._fin = null;
-      return;
+    for (let i = this._fins.length - 1; i >= 0; i--) {
+      const f = this._fins[i];
+      f.t -= dt;
+      if (f.t <= 0) this._fins.splice(i, 1);
+      else this._cannon(f, dt);
     }
+  }
+
+  _cannon(f, dt) {
     const k = f.kart;
     f.acc += dt * 170 * (0.5 + 0.5 * this.qscale);
     const fw = k.forward, rt = k.right, kv = k.velocity;
@@ -151,11 +171,12 @@ export class Effects {
     }
   }
 
-  _emitKart(dt, k, cam) {
+  _emitKart(dt, k, cams) {
     const m = k.model;
     const st = this._st(k);
     const acc = st.acc;
-    const d2 = k.position.distanceToSquared(cam);
+    let d2 = Infinity;
+    for (let i = 0; i < cams.length; i++) d2 = Math.min(d2, k.position.distanceToSquared(cams[i]));
     let lod = d2 < 484 ? 1 : d2 < 3025 ? 0.55 : d2 < 12100 ? 0.25 : 0;
     if (k.isPlayer) lod = Math.max(lod, 0.9);
     const q = this.qscale;
@@ -485,11 +506,12 @@ export class Effects {
     this._lastExplode.t = this.ps.time;
     this._lastExplode.p.set(p.x, p.y, p.z);
     // screen flash when it goes off near the player
-    const pl = this.game.player;
     const pfx = this.game.postfx;
-    if (pl && pfx?.flash) {
-      const d = Math.hypot(pl.position.x - p.x, pl.position.z - p.z);
-      if (d < 14 * s) pfx.flash(clamp(0.34 - d * 0.02, 0.08, 0.3), 0xffc070, 0.22);
+    if (pfx?.flash) {
+      for (const pl of this._humans()) {
+        const d = Math.hypot(pl.position.x - p.x, pl.position.z - p.z);
+        if (d < 14 * s) pfx.flash(clamp(0.34 - d * 0.02, 0.08, 0.3), 0xffc070, 0.22, pl);
+      }
     }
   }
 
@@ -723,7 +745,7 @@ export class Effects {
         at(k, 'head', _a);
         this._hit(_a, type === 'explode' ? 1.6 : 1.1, {});
         const g = this.game;
-        if (k === g.player && g.postfx?.hitPulse) g.postfx.hitPulse(type === 'explode' ? 1 : 0.7);
+        if (k.isPlayer && g.postfx?.hitPulse) g.postfx.hitPulse(type === 'explode' ? 1 : 0.7, k);
         if (type === 'explode') {
           const recent = this.ps.time - this._lastExplode.t < 0.4 && this._lastExplode.p.distanceToSquared(k.position) < 100;
           if (!recent) this._explosion(_b.copy(k.position), 0.7, {});
@@ -782,16 +804,17 @@ export class Effects {
         if (!position || item === 'bomb') return;
         this._hit(position, 0.9, {});
       }),
-      on(EVT.ITEM_LIGHTNING, ({ owner }) => this._lightning(owner?.position ?? this.game.player?.position ?? _a.set(0, 0, 0), { owner })),
+      on(EVT.ITEM_LIGHTNING, ({ owner }) => this._lightning(owner?.position ?? this._humans()[0]?.position ?? _a.set(0, 0, 0), { owner })),
       on(EVT.KART_FALL, ({ kart: k }) => {
         const wl = this.game.track?.waterLevel;
         if (wl == null) return;
         if (k.position.y - wl < 4) this._splash(_a.set(k.position.x, wl, k.position.z), 1.2);
       }),
       on(EVT.RACE_FINISH, ({ kart: k }) => {
-        if (k !== this.game.player) return;
-        this._fin = { kart: k, t: 4.5, acc: 0 };
-        this.game.postfx?.flash?.(0.22, 0xfff2c8, 0.3);
+        if (!k.isPlayer && k !== this.game.player) return;
+        this._fins = this._fins.filter((f) => f.kart !== k);
+        this._fins.push({ kart: k, t: 4.5, acc: 0 });
+        this.game.postfx?.flash?.(0.22, 0xfff2c8, 0.3, k);
       }),
     ];
   }

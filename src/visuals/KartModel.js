@@ -21,6 +21,7 @@ import { makeKartUniforms, createKartMaterial } from './material.js';
 import { buildDriver } from './drivers/index.js';
 import { Spring, FlexChannel, follow, easeOutCubic, easeInOutCubic } from './animation.js';
 import { createDrone, createDizzy, blobTexture } from './extras.js';
+import { createPlayerMarker } from './playerMarker.js';
 
 const PIV = 0.55; // height of the flip/scale pivot (kart centre)
 const TAU = Math.PI * 2;
@@ -62,11 +63,13 @@ const _axis = new THREE.Vector3();
 export class KartModel {
   /**
    * @param {object} character entry of CHARACTERS
-   * @param {{isPlayer?: boolean, quality?: 'low'|'medium'|'high'}} opts
+   * @param {{isPlayer?: boolean, quality?: 'low'|'medium'|'high', playerIndex?: number, playerCount?: number}} opts
+   *   playerIndex/playerCount: with playerCount > 1 a human kart (playerIndex >= 0) gets a floating P1..P4 marker.
    */
-  constructor(character, { isPlayer = false, quality = 'high' } = {}) {
+  constructor(character, { isPlayer = false, quality = 'high', playerIndex = -1, playerCount = 1 } = {}) {
     this.character = character;
     this.isPlayer = isPlayer;
+    this.playerIndex = playerIndex;
     this.quality = quality;
     const P = (this.parts = getParts(character, quality));
     const cls = P.cls;
@@ -164,6 +167,13 @@ export class KartModel {
     this.dizzy = createDizzy(quality);
     this.dizzy.group.position.y = D.h.cy + D.h.ry + 0.22;
     this.head.add(this.dizzy.group);
+
+    // split-screen player tag
+    this.marker = null;
+    if (playerCount > 1 && playerIndex >= 0) {
+      const topY = this.getAnchor('top', new THREE.Vector3()).y - this.root.position.y;
+      this.marker = createPlayerMarker(this.root, playerIndex, Math.max(1.9, topY + 0.35));
+    }
 
     // rescue drone (built lazily on first use)
     this.drone = null;
@@ -350,6 +360,7 @@ export class KartModel {
     this.material.dispose();
     this.blobMat.dispose();
     this.blob.geometry.dispose();
+    this.marker?.dispose();
     this.dizzy.mat.dispose();
     if (this.drone) {
       this.drone.group.removeFromParent();

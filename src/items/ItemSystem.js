@@ -146,6 +146,7 @@ export class ItemSystem {
     this.track = null;
     this.karts = [];
     this.player = null;
+    this.players = [];
     this.config = null;
     this.group = null;
     this.renderer = null;
@@ -177,6 +178,8 @@ export class ItemSystem {
     this.track = track;
     this.karts = karts;
     this.player = player;
+    /** Every human kart (split-screen); [] outside a race. Falls back to [player]. */
+    this.players = ctx.players?.length ? ctx.players : (player ? [player] : []);
     this.config = config;
     this.time = 0;
     this.boltCooldown = 0;
@@ -205,7 +208,9 @@ export class ItemSystem {
       this.boxes = this.boxField.list;
     } else {
       this.boxes = [];
-      if (player) this.giveItem(player, 'nitro3'); // time trial: no boxes, start with a triple nitro
+      // time trial (always 1 player): no boxes, start with a triple nitro
+      const solo = this.players[0] ?? player;
+      if (solo) this.giveItem(solo, 'nitro3');
     }
 
     this._off.push(this.game.events.on(EVT.KART_HIT, (p) => this._onKartHit(p)));
@@ -238,6 +243,7 @@ export class ItemSystem {
     this.track = null;
     this.karts = [];
     this.player = null;
+    this.players = [];
     this._active = false;
   }
 
@@ -285,6 +291,7 @@ export class ItemSystem {
       projectiles: this.projectiles.length,
       boxes: this.boxes.filter((b) => b.active).length,
       comet: !!this._cometEntity,
+      humans: this.players.length,
       boltCooldown: Math.max(0, this.boltCooldown),
     };
   }

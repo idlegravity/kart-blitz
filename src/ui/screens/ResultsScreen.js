@@ -12,6 +12,7 @@ import { h, clamp, lerp, easeOutCubic, pop } from '../dom.js';
 import { uiIcon } from '../icons.js';
 import { fmtTime } from '../parts.js';
 import { placeGradient, suffix } from '../placeStyle.js';
+import { playerColor, playerTag, playerIndexOf } from '../split.js';
 
 const STEP = 4.7; // em between rows (kept in sync with CSS)
 
@@ -61,6 +62,10 @@ export class ResultsScreen extends Screen {
     const f = this.ui.flow;
     f.mode = this.mode;
     f.characterId = cfg.characterId ?? f.characterId;
+    if (cfg.players?.length) {
+      f.players = cfg.players.length;
+      f.slots = cfg.players.map((p) => ({ characterId: p.characterId, device: p.device }));
+    }
     f.trackId = cfg.trackId ?? f.trackId;
     f.cc = cfg.cc ?? f.cc;
 
@@ -74,7 +79,12 @@ export class ResultsScreen extends Screen {
     this.table.dataset.mode = this.mode;
     this.table.dataset.page = 'race';
 
-    const player = this.results.find((r) => r.isPlayer);
+    const humans = this.results.filter((r) => r.isPlayer).sort((a, b) => this._pi(a) - this._pi(b));
+    this.humans = humans;
+    this.multi = humans.length > 1;
+    this.root.classList.toggle('is-multi', this.multi);
+    this.you.classList.toggle('res__you--multi', this.multi);
+    const player = humans.slice().sort((a, b) => a.place - b.place)[0]; // 1P: the player; split: the best human
     if (this.mode === 'timetrial') {
       this.table.style.display = 'none';
       this.ttBox.style.display = '';
@@ -85,10 +95,16 @@ export class ResultsScreen extends Screen {
       this.ttBox.style.display = 'none';
       this.you.style.display = '';
       this._buildRows();
-      this._buildYou(player);
+      if (this.multi) this._buildYouMulti();
+      else this._buildYou(player);
     }
     this._setButtons(this._raceButtons());
     this._confetti(player);
+  }
+
+  /** Player index (0..3) of a human result row. */
+  _pi(r) {
+    return playerIndexOf(r, this.config);
   }
 
   _setTitle(text) {
@@ -113,8 +129,9 @@ export class ResultsScreen extends Screen {
         delta: h('div.rr__c.c-delta'),
       };
       const inner = h('div.rr__in.a-right', { style: { '--i': i } },
-        cells.place, h('div.rr__port', img), h('div.rr__name', r.name), cells.time, cells.best, cells.pts, cells.total, cells.delta);
-      const el = h(`div.rr${r.isPlayer ? '.is-player' : ''}`, { style: { '--r': i, '--c': color } }, inner);
+        cells.place, h('div.rr__port', img), this._nameCell(r), cells.time, cells.best, cells.pts, cells.total, cells.delta);
+      const pi = r.isPlayer ? this._pi(r) : -1;
+      const el = h(`div.rr${r.isPlayer ? '.is-player' : ''}${this.multi && r.isPlayer ? '.is-human' : ''}`, { style: { '--r': i, '--c': color, '--pc': pi >= 0 ? playerColor(pi) : 'transparent' } }, inner);
       this.table.appendChild(el);
       const prev = (r.totalPoints ?? 0) - (r.points ?? 0);
       const row = { r, el, inner, cells, prev, total: r.totalPoints ?? 0, prevRank: i, newRank: i };
@@ -129,6 +146,12 @@ export class ResultsScreen extends Screen {
     });
     // Grand Prix: the running total counts up from the previous total once the rows have slid in
     this.count = this.mode === 'gp' ? { t: 0 } : null;
+  }
+
+  _nameCell(r) {
+    if (!(this.multi && r.isPlayer)) return h('div.rr__name', r.name);
+    const pi = this._pi(r);
+    return h('div.rr__name.rr__name--tagged', h('span', r.name), h('span.ptag', { style: { '--pc': playerColor(pi) } }, playerTag(pi)));
   }
 
   _setPlaceCell(el, place) {
@@ -152,6 +175,22 @@ export class ResultsScreen extends Screen {
         ${gp ? `<div class="you__s1 you__s1--pts"><span>Points</span><b>+${p.points ?? 0}</b></div>` : ''}
       </div>`;
     pop(this.you.querySelector('.you__place'), { from: 0.5, duration: 700 });
+  }
+
+  /** Split-screen: one compact card per human (place, time) instead of the single "your result" card. */
+  _buildYouMulti() {
+    const gp = this.mode === 'gp';
+    const cards = this.humans.map((p, i) => {
+      const pi = this._pi(p);
+      const n = String(p.place);
+      return `<div class="yc" style="--pc:${playerColor(pi)};--i:${i};--g:${placeGradient(p.place)}">
+        <div class="yc__top"><span class="ptag">${playerTag(pi)}</span><span class="yc__nm">${p.name}</span></div>
+        <div class="yc__place"><span class="fx fx--big" data-text="${n}" style="--g:${placeGradient(p.place)}">${n}</span><span class="fx fx--big" data-text="${suffix(p.place)}" style="--g:${placeGradient(p.place)}">${suffix(p.place)}</span></div>
+        <div class="yc__time">${p.estimated ? '\u2014' : fmtTime(p.time)}${gp ? ` &nbsp;<b>+${p.points ?? 0}</b>` : ''}</div>
+      </div>`;
+    });
+    this.you.style.removeProperty('--g');
+    this.you.innerHTML = `<div class="you__label">Results</div><div class="yous" data-n="${this.humans.length}">${cards.join('')}</div>`;
   }
 
   _buildTimeTrial(p) {
@@ -194,7 +233,7 @@ export class ResultsScreen extends Screen {
       ];
     }
     return [
-      { label: this.mode === 'timetrial' ? 'Retry' : 'Race Again', sub: 'Same track, same racer', icon: 'restart', accent: A.green, run: () => g.restartRace() },
+      { label: this.mode === 'timetrial' ? 'Retry' : 'Race Again', sub: this.multi ? 'Same track, same racers' : 'Same track, same racer', icon: 'restart', accent: A.green, run: () => g.restartRace() },
       { label: 'Change Track', sub: 'Pick another course', icon: 'flag', accent: A.cyan, run: () => this._toTrackSelect() },
       { label: 'Main Menu', sub: 'Back to the start', icon: 'home', accent: A.red, run: () => g.quitToMenu() },
     ];
@@ -278,8 +317,18 @@ export class ResultsScreen extends Screen {
     void this.table.offsetWidth; // eslint-disable-line no-unused-expressions
     this.table.classList.remove('is-snap');
     // the player summary becomes a "points" card
-    const p = this.results.find((r) => r.isPlayer);
-    if (p) {
+    const p = this.humans?.[0];
+    if (this.multi) {
+      const cards = this.humans.map((hp, i) => {
+        const pi = this._pi(hp);
+        return `<div class="yc" style="--pc:${playerColor(pi)};--i:${i}">
+          <div class="yc__top"><span class="ptag">${playerTag(pi)}</span><span class="yc__nm">${hp.name}</span></div>
+          <div class="yc__place"><span class="fx fx--big" data-text="${hp.totalPoints}">${hp.totalPoints}</span><small>pts</small></div>
+          <div class="yc__time"><b>+${hp.points ?? 0}</b> this race</div>
+        </div>`;
+      });
+      this.you.innerHTML = `<div class="you__label">Points \u2022 Race ${g.gp.raceIndex + 1} / ${g.gp.trackIds.length}</div><div class="yous" data-n="${this.humans.length}">${cards.join('')}</div>`;
+    } else if (p) {
       this.you.style.setProperty('--g', placeGradient(1));
       this.you.innerHTML = `
         <div class="you__label">Your points</div>

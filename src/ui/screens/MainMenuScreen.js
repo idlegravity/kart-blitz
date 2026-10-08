@@ -80,7 +80,7 @@ export class MainMenuScreen extends Screen {
       case 'gp':
       case 'quick':
         ui.flow.mode = id;
-        ui.goto('cc');
+        ui.goto('players');
         break;
       case 'timetrial':
         ui.flow.mode = 'timetrial';

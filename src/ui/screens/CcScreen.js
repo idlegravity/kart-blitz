@@ -56,7 +56,8 @@ export class CcScreen extends Screen {
   onShow() {
     this.ui.showroom('menu');
     const label = this.ui.flow.mode === 'gp' ? 'Grand Prix' : 'Quick Race';
-    this.headEl.querySelector('.pill').textContent = label;
+    const np = this.ui.flow.players ?? 1;
+    this.headEl.querySelector('.pill').textContent = np > 1 ? `${label} \u2022 ${np} Players` : label;
     // the persisted default class (Options can change it) wins over the in-memory flow value
     const cc = this.game.settings?.cc ?? this.ui.flow.cc;
     this.ui.flow.cc = cc;
@@ -67,10 +68,10 @@ export class CcScreen extends Screen {
   pick(cc) {
     this.ui.flow.cc = cc;
     this.game.setSetting?.('cc', cc);
-    this.ui.goto('character');
+    this.ui.goto(this.ui.flow.players > 1 ? 'lobby' : 'character');
   }
 
   onBack() {
-    this.ui.goto('main');
+    this.ui.goto('players');
   }
 }
